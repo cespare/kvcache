@@ -11,9 +11,8 @@ import (
 // Routines for parsing and writing the Redis protocol.
 // http://redis.io/topics/protocol
 
-func parseRedisArrayBulkString(r io.Reader) ([]string, error) {
+func parseRedisArrayBulkString(br *bufio.Reader) ([]string, error) {
 	// TODO: Sanity check count and size in this function
-	br := bufio.NewReader(r)
 	if err := expectString(br, "*"); err != nil {
 		return nil, err
 	}

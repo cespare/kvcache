@@ -1,6 +1,7 @@
 package main
 
 import (
+	"bufio"
 	"errors"
 	"io"
 	"log"
@@ -29,6 +30,7 @@ type Request struct {
 	Key   []byte
 	Value []byte
 	Resp  chan *Response
+	Err   error // If there was an error reading the request, only this field is set.
 }
 
 type RequestType uint8
@@ -77,48 +79,122 @@ func (s *Server) loop(l net.Listener) error {
 	}
 }
 
+func when(ch chan *Response, pred bool) chan *Response {
+	if pred {
+		return ch
+	}
+	return nil
+}
+
+func head(q []*Response) *Response {
+	if len(q) == 0 {
+		return nil
+	}
+	return q[0]
+}
+
 func (s *Server) HandleConn(c net.Conn) {
 	log.Printf("Client connected from %s", c.RemoteAddr())
+
+	// readErr and writeErr are how the request reader and response writer goroutines can notify the other that
+	// the client (or connection) broke/disconnected.
+	// These signal chans are only closed.
+	readErr := make(chan struct{})
+	writeErr := make(chan struct{})
+
+	// This request goroutine reads requests and sends them into this goroutine to be handled and buffered;
+	// Responses are sent off to the response goroutine.
+	// This is necessary for Redis pipelining to work.
+	requests := make(chan *Request)
+	responses := make(chan *Response)
+
+	go s.readRequests(c, requests, readErr, writeErr)
+	go s.writeResponses(c, responses, readErr, writeErr)
+
+	var responseQueue []*Response
+
+reqLoop:
 	for {
-		var r Request
 		resp := &Response{Type: RedisString}
-		if err := r.Parse(c); err != nil {
-			resp.Msg = []byte(err.Error())
-			resp.Type = RedisErr
-		} else {
-			switch r.Type {
-			case RequestSet:
-				if err := s.db.Put(r.Key, r.Value); err != nil {
-					resp = ResponseFromError(err)
-					break
-				}
-				resp.Msg = []byte("OK")
-			case RequestGet:
-				v, err := s.db.Get(r.Key)
-				switch err {
-				case nil:
-					resp.Type = RedisBulk
-					resp.Msg = v
-				case ErrKeyNotExist:
-					// Redis null value
-					resp.Type = RedisBulk
+		select {
+		case r := <-requests:
+			if r.Err != nil {
+				resp.Msg = []byte(r.Err.Error())
+				resp.Type = RedisErr
+			} else {
+				switch r.Type {
+				case RequestSet:
+					if err := s.db.Put(r.Key, r.Value); err != nil {
+						resp = ResponseFromError(err)
+						break
+					}
+					resp.Msg = []byte("OK")
+				case RequestGet:
+					v, err := s.db.Get(r.Key)
+					switch err {
+					case nil:
+						resp.Type = RedisBulk
+						resp.Msg = v
+					case ErrKeyNotExist:
+						// Redis null value
+						resp.Type = RedisBulk
+					default:
+						resp = ResponseFromError(err)
+					}
+				case RequestPing:
+					resp.Msg = []byte("PONG")
+				case RequestInfo:
+					resp.Msg = []byte("useful info")
 				default:
-					resp = ResponseFromError(err)
+					panic("unexpected request type")
 				}
-			case RequestPing:
-				resp.Msg = []byte("PONG")
-			case RequestInfo:
-				resp.Msg = []byte("useful info")
-			default:
-				panic("unexpected request type")
 			}
-		}
-		if err := resp.Write(c); err != nil {
-			break
+			responseQueue = append(responseQueue, resp)
+		case when(responses, len(responseQueue) > 0) <- head(responseQueue):
+			responseQueue = responseQueue[1:]
+		case <-readErr:
+			break reqLoop
+		case <-writeErr:
+			break reqLoop
 		}
 	}
+
 	log.Printf("Client disconnected from %s", c.RemoteAddr())
 	c.Close()
+}
+
+func (s *Server) readRequests(c net.Conn, requests chan<- *Request, readErr, writeErr chan struct{}) {
+	br := bufio.NewReader(c)
+	for {
+		var r Request
+		if err := r.Parse(br); err != nil {
+			if _, ok := err.(net.Error); ok {
+				close(readErr)
+				return
+			}
+			r.Err = err
+		}
+		requests <- &r
+		select {
+		case <-writeErr:
+			return
+		default:
+		}
+	}
+}
+
+func (s *Server) writeResponses(c net.Conn, responses <-chan *Response, readErr, writeErr chan struct{}) {
+	for {
+		select {
+		case resp := <-responses:
+			if err := resp.Write(c); err != nil {
+				close(writeErr)
+				return
+			}
+		case <-readErr:
+			return
+		}
+	}
 }
 
 func ResponseFromError(err error) *Response {
@@ -134,8 +210,8 @@ var (
 	ErrWrongNumArgs        = errors.New("wrong number of arguments for command")
 )
 
-func (r *Request) Parse(rdr io.Reader) error {
-	array, err := parseRedisArrayBulkString(rdr)
+func (r *Request) Parse(br *bufio.Reader) error {
+	array, err := parseRedisArrayBulkString(br)
 	if err != nil {
 		return err
 	}
