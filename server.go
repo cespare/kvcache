@@ -148,7 +148,7 @@ reqLoop:
 				default:
 					panic("unexpected request type")
 				}
-			}
+			} 
 			responseQueue = append(responseQueue, resp)
 		case when(responses, len(responseQueue) > 0) <- head(responseQueue):
 			responseQueue = responseQueue[1:]

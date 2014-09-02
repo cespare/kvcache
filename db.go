@@ -1,19 +1,22 @@
 package main
 
 import (
+	"bytes"
 	"errors"
 	"sync"
+
+	"github.com/cespare/kvcache/b"
 )
 
 type DB struct {
 	*sync.Mutex
-	m map[string][]byte
+	btree *b.Tree
 }
 
 func NewDB() *DB {
 	return &DB{
 		Mutex: new(sync.Mutex),
-		m:     make(map[string][]byte),
+		btree: b.TreeNew(bytes.Compare),
 	}
 }
 
@@ -26,10 +29,15 @@ func (db *DB) Put(k, v []byte) error {
 	db.Lock()
 	defer db.Unlock()
 
-	if _, ok := db.m[string(k)]; ok {
+	_, written := db.btree.Put(k, func(_ []byte, exists bool) (newValue []byte, write bool) {
+		if exists {
+			return nil, false
+		}
+		return v, true
+	})
+	if !written {
 		return ErrKeyExist
 	}
-	db.m[string(k)] = v
 	return nil
 }
 
@@ -37,7 +45,7 @@ func (db *DB) Get(k []byte) (v []byte, err error) {
 	db.Lock()
 	defer db.Unlock()
 
-	v, ok := db.m[string(k)]
+	v, ok := db.btree.Get(k)
 	if !ok {
 		return nil, ErrKeyNotExist
 	}
