@@ -18,11 +18,15 @@ type Server struct {
 	db   *DB
 }
 
-func NewServer(addr string) *Server {
+func NewServer(addr string) (*Server, error) {
+	db, err := NewDB(30, 3, time.Hour, "db")
+	if err != nil {
+		return nil, err
+	}
 	return &Server{
 		addr: addr,
-		db:   NewDB(),
-	}
+		db:   db,
+	}, nil
 }
 
 type Request struct {
@@ -148,7 +152,7 @@ reqLoop:
 				default:
 					panic("unexpected request type")
 				}
-			} 
+			}
 			responseQueue = append(responseQueue, resp)
 		case when(responses, len(responseQueue) > 0) <- head(responseQueue):
 			responseQueue = responseQueue[1:]
@@ -276,5 +280,9 @@ func (r *Response) Write(w io.Writer) error {
 func main() {
 	const addr = "localhost:5533"
 	log.Println("Now listening on", addr)
-	log.Fatal(NewServer(addr).Start())
+	server, err := NewServer(addr)
+	if err != nil {
+		log.Fatal(err)
+	}
+	log.Fatal(server.Start())
 }
