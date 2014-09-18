@@ -8,10 +8,7 @@ import (
 	"hash"
 	"hash/crc32"
 	"io"
-	"os"
 	"time"
-
-	"github.com/edsrzf/mmap-go"
 )
 
 // This file implements a rotating, append-only log of expiring key/value pairs.
@@ -50,59 +47,48 @@ import (
 // auxiliary index file as we go, which only contains timestamps, keys, and value offsets. (This is analagous
 // to git's pack indexes.)
 
-type Record struct {
-	t     time.Time
-	key   []byte
-	value []byte
-}
-
-
 type WriteLog struct {
-	f       *os.File    // Opened WRONLY
+	w       io.WriteCloser
 	crc     hash.Hash32 // Running CRC-32 checksum
 	size    uint64
 	maxSize uint64
 }
 
-func NewWriteLog(filename string, maxSize uint64) (*WriteLog, error) {
-	f, err := os.OpenFile(filename, os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0600)
-	if err != nil {
-		return nil, err
-	}
-	w := &WriteLog{
-		f:       f,
+func NewWriteLog(w io.WriteCloser, maxSize uint64) (*WriteLog, error) {
+	wl := &WriteLog{
+		w:       w,
 		crc:     crc32.NewIEEE(),
 		maxSize: maxSize,
 	}
 	header := make([]byte, 8)
 	copy(header, "k\336vs")
 	binary.BigEndian.PutUint32(header[4:], 1)
-	if _, err := w.Write(header); err != nil {
+	if _, err := wl.Write(header); err != nil {
 		return nil, err
 	}
-	return w, nil
+	return wl, nil
 }
 
 var ErrWriteLogFull = errors.New("write log is filled to max capacity")
 
-func (w *WriteLog) WriteRecord(rec *Record) (offset uint64, err error) {
+func (wl *WriteLog) WriteRecord(rec *Record) (offset uint64, err error) {
 	// TODO: Come up with some hard upper bounds for key and value sizes and enforce above this in the database.
 	// Then it's ok to ignore the fact that this method panics for very large keys/values (when the uvarint
 	// sizes take > 8 bytes).
-	if w.size >= w.maxSize {
+	if wl.size >= wl.maxSize {
 		return 0, ErrWriteLogFull
 	}
-	sizeBefore := w.size
+	sizeBefore := wl.size
 	scratch := make([]byte, 8+8+len(rec.key)+8) // Upper-bound guess
 	binary.BigEndian.PutUint64(scratch, uint64(rec.t.UnixNano()))
 	nk := binary.PutUvarint(scratch[8:], uint64(len(rec.key)))
 	copy(scratch[8+nk:], rec.key)
 	nv := binary.PutUvarint(scratch[8+nk+len(rec.key):], uint64(len(rec.value)))
 	scratch = scratch[:8+nk+len(rec.key)+nv]
-	if _, err := w.Write(scratch); err != nil {
+	if _, err := wl.Write(scratch); err != nil {
 		return 0, err
 	}
-	flateWriter, err := flate.NewWriter(w, flate.DefaultCompression)
+	flateWriter, err := flate.NewWriter(wl, flate.DefaultCompression)
 	if err != nil {
 		panic("flate.NewWriter failed")
 	}
@@ -115,57 +101,35 @@ func (w *WriteLog) WriteRecord(rec *Record) (offset uint64, err error) {
 	return sizeBefore, nil
 }
 
-func (w *WriteLog) Close() error {
-	sum := w.crc.Sum(nil)
-	if _, err := w.f.Write(sum); err != nil {
+func (wl *WriteLog) Close() error {
+	sum := wl.crc.Sum(nil)
+	if _, err := wl.w.Write(sum); err != nil {
 		return err
 	}
-	return w.f.Close()
+	return wl.w.Close()
 }
 
-func (w *WriteLog) Write(b []byte) (n int, err error) {
-	n, err = w.f.Write(b)
-	w.crc.Write(b[:n])
-	w.size += uint64(n)
+func (wl *WriteLog) Write(b []byte) (n int, err error) {
+	n, err = wl.w.Write(b)
+	wl.crc.Write(b[:n])
+	wl.size += uint64(n)
 	return
 }
 
 type ReadLog struct {
-	f *os.File  // Opened RDONLY
-	m mmap.MMap // RDONLY mmap
+	b []byte
 }
 
-func OpenReadLog(filename string) (*ReadLog, error) {
-	f, err := os.Open(filename)
-	if err != nil {
-		return nil, err
-	}
-	m, err := mmap.Map(f, mmap.RDONLY, 0)
-	if err != nil {
-		f.Close()
-		return nil, err
-	}
-	return &ReadLog{
-		f: f,
-		m: m,
-	}, nil
-}
-
-func (w *WriteLog) ReopenAsReadLog() (*ReadLog, error) {
-	if err := w.Close(); err != nil {
-		return nil, err
-	}
-	return OpenReadLog(w.f.Name())
-}
+func OpenReadLog(b []byte) *ReadLog { return &ReadLog{b} }
 
 var (
 	ErrBadRecordKeyLen   = errors.New("got bad value (or could not read) for record key length")
 	ErrBadRecordValueLen = errors.New("got bad value (or could not read) for record value length")
 )
 
-func (r *ReadLog) ReadRecord(offset uint64) (*Record, error) {
+func (rl *ReadLog) ReadRecord(offset uint64) (*Record, error) {
 	// TODO: Same sanity checking here as for WriteRecord.
-	b := r.m[offset:]
+	b := rl.b[offset:]
 	t := time.Unix(0, int64(binary.BigEndian.Uint64(b[:8])))
 
 	nk, n := binary.Uvarint(b[8:])
@@ -194,17 +158,4 @@ func (r *ReadLog) ReadRecord(offset uint64) (*Record, error) {
 	}, nil
 }
 
-func (r *ReadLog) ReadFirstRecord() (*Record, error) {
-	return r.ReadRecord(8)
-}
-
-func (r *ReadLog) Close() error {
-	if err := r.m.Unmap(); err != nil {
-		return err
-	}
-	return r.f.Close()
-}
-
-func (r *ReadLog) Filename() string {
-	return r.f.Name()
-}
+func (rl *ReadLog) ReadFirstRecord() (*Record, error) { return rl.ReadRecord(8) }
