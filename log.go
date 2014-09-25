@@ -1,14 +1,14 @@
 package main
 
 import (
-	"bytes"
-	"compress/flate"
 	"encoding/binary"
 	"errors"
 	"hash"
 	"hash/crc32"
 	"io"
 	"time"
+
+	"code.google.com/p/snappy-go/snappy"
 )
 
 // This file implements a rotating, append-only log of expiring key/value pairs.
@@ -30,9 +30,8 @@ import (
 // - 8-byte (uint64) nanosecond timestamp (monotonically increasing within the file)
 // - uvarint-encoded key size, K
 // - K bytes for the key
-// - uvarint-encoded *uncompressed* value size, V_dec
-// - V_enc bytes of DEFLATE-compressed data for the value (where V_enc is different from -- and hopefully
-//   smaller than -- V_dec).
+// - uvarint-encoded *compressed* value size, V
+// - V bytes of snappy-compressed data for the value
 //
 // The checksum is the 4-byte IEEE CRC-32 checksum of everything preceding it in the file.
 
@@ -79,25 +78,27 @@ func (wl *WriteLog) WriteRecord(rec *Record) (offset uint64, err error) {
 		return 0, ErrWriteLogFull
 	}
 	sizeBefore := wl.size
-	scratch := make([]byte, 8+8+len(rec.key)+8) // Upper-bound guess
+	scratch := make([]byte, 8+8+len(rec.key)+8) // Upper-bound guess for everything before the value
 	binary.BigEndian.PutUint64(scratch, uint64(rec.t.UnixNano()))
 	nk := binary.PutUvarint(scratch[8:], uint64(len(rec.key)))
 	copy(scratch[8+nk:], rec.key)
-	nv := binary.PutUvarint(scratch[8+nk+len(rec.key):], uint64(len(rec.value)))
+
+	encodedValue, err := snappy.Encode(nil, rec.value)
+	if err != nil {
+		// TODO: how can this happen?
+		panic("snappy encoding failed: " + err.Error())
+	}
+
+	nv := binary.PutUvarint(scratch[8+nk+len(rec.key):], uint64(len(encodedValue)))
 	scratch = scratch[:8+nk+len(rec.key)+nv]
 	if _, err := wl.Write(scratch); err != nil {
 		return 0, err
 	}
-	flateWriter, err := flate.NewWriter(wl, flate.DefaultCompression)
-	if err != nil {
-		panic("flate.NewWriter failed")
-	}
-	if _, err := flateWriter.Write(rec.value); err != nil {
+
+	if _, err := wl.Write(encodedValue); err != nil {
 		return 0, err
 	}
-	if err := flateWriter.Close(); err != nil {
-		return 0, err
-	}
+
 	return sizeBefore, nil
 }
 
@@ -144,10 +145,9 @@ func (rl *ReadLog) ReadRecord(offset uint64) (*Record, error) {
 	if n <= 0 {
 		return nil, ErrBadRecordValueLen
 	}
-	value := make([]byte, nv)
-	flateReader := flate.NewReader(bytes.NewReader(b[n:]))
-	defer flateReader.Close()
-	if _, err := io.ReadFull(flateReader, value); err != nil {
+
+	value, err := snappy.Decode(nil, b[n:n+int(nv)])
+	if err != nil {
 		return nil, err
 	}
 

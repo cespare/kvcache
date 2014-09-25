@@ -8,7 +8,7 @@ import (
 	"strconv"
 )
 
-// Routines for parsing and writing the Redis protocol.
+// Routines for parsing the Redis protocol.
 // http://redis.io/topics/protocol
 
 func parseRedisArrayBulkString(br *bufio.Reader) ([]string, error) {
