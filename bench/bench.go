@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"log"
 	"math/rand"
+	"sync"
 	"time"
 
 	"github.com/garyburd/redigo/redis"
@@ -29,14 +30,11 @@ func randStr(n int) string {
 	return string(r)
 }
 
-func makeRequests(pool *redis.Pool) {
+func makeRequests(pool *redis.Pool, n int) {
 	conn := pool.Get()
 	defer conn.Close()
 
-	const N = 10000
-
-	start := time.Now()
-	for i := 0; i < N; i++ {
+	for i := 0; i < n; i++ {
 		key := randStr(10)
 		val := randStr(1000)
 		_, err := conn.Do("SET", key, val)
@@ -51,9 +49,6 @@ func makeRequests(pool *redis.Pool) {
 		//log.Fatal("result mismatch")
 		//}
 	}
-	elapsed := time.Now().Sub(start)
-	fmt.Printf("Took %s for %d iterations | %s / op | %.1f ops / s\n", elapsed, N, elapsed/N,
-		N*float64(time.Second)/float64(elapsed))
 }
 
 func main() {
@@ -63,5 +58,22 @@ func main() {
 		IdleTimeout: time.Second,
 		Dial:        func() (redis.Conn, error) { return redis.Dial("tcp", "localhost:5533") },
 	}
-	makeRequests(pool)
+	const N = 100000
+	const P = 4
+	if N % P != 0 {
+		log.Fatal("N must be divisible by P")
+	}
+	var wg sync.WaitGroup
+	wg.Add(P)
+	start := time.Now()
+	for i := 0; i < P; i++ {
+		go func() {
+			makeRequests(pool, N/P)
+			wg.Done()
+		}()
+	}
+	wg.Wait()
+	elapsed := time.Since(start)
+	fmt.Printf("Took %s for %d iterations | %s / op | %.1f ops / s\n", elapsed, N, elapsed/N,
+		N*float64(time.Second)/float64(elapsed))
 }
