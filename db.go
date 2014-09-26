@@ -32,11 +32,7 @@ func (db *DB) Get(k []byte) (v []byte, err error) {
 }
 
 func (db *DB) Put(k, v []byte) error {
-	if _, err := db.f.Write(k); err != nil {
-		return err
-	}
-	if _, err := db.f.Write(v); err != nil {
-		return err
-	}
-	return nil
+	b := append(k, v...)
+	_, err := db.f.Write(b)
+	return err
 }

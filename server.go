@@ -19,6 +19,7 @@ type Server struct {
 }
 
 func NewServer(addr string) (*Server, error) {
+	//db, err := NewDB("/mnt/data/kvcache/db")
 	db, err := NewDB("db")
 	if err != nil {
 		return nil, err

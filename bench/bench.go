@@ -24,10 +24,11 @@ func init() {
 
 func randStr(n int) string {
 	r := make([]rune, n)
-	for i := range r {
-		r[i] = rune(rand.Intn(maxChar-minChar+1) + minChar)
-	}
 	return string(r)
+	//for i := range r {
+		//r[i] = rune(rand.Intn(maxChar-minChar+1) + minChar)
+	//}
+	//return string(r)
 }
 
 func makeRequests(pool *redis.Pool, n int) {
@@ -36,7 +37,7 @@ func makeRequests(pool *redis.Pool, n int) {
 
 	for i := 0; i < n; i++ {
 		key := randStr(10)
-		val := randStr(1000)
+		val := randStr(10000)
 		_, err := conn.Do("SET", key, val)
 		if err != nil {
 			log.Fatal(err)
@@ -58,7 +59,7 @@ func main() {
 		IdleTimeout: time.Second,
 		Dial:        func() (redis.Conn, error) { return redis.Dial("tcp", "localhost:5533") },
 	}
-	const N = 100000
+	const N = 5000
 	const P = 4
 	if N % P != 0 {
 		log.Fatal("N must be divisible by P")
