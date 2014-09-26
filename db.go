@@ -1,16 +1,11 @@
 package main
 
 import (
-	"errors"
+	"crypto/sha1"
 	"fmt"
-	"log"
-	"os"
 	"path/filepath"
-	"sync"
 	"time"
 )
-
-// TODO: I could shard the DB on e.g. key[0] if lock contention becomes significant.
 
 type Record struct {
 	t     time.Time
@@ -24,207 +19,70 @@ type RecordRef struct {
 }
 
 type DB struct {
-	// Immutable configuration
-	blockSize   uint64        // On-disk size limit for a block
-	cacheBlocks int           // Number of blocks to cache directly in memory
-	expiry      time.Duration // How long to keep data around at all
-	dir         string        // Where to keep database files
-
-	mu *sync.Mutex // Protects all of the following
-
-	// Block files
-	seq           uint64 // Current base sequence # for wblock; seq+i+1 is the sequence # for an rblock
-	wblock        *WriteBlock
-	rblocks       []*ReadBlock
-	rblocksCached int // wblock is always cached, so this should be <= cacheBlocks-1
-
-	// Maps
-	memCache map[string][]byte
-	refCache map[string]*RecordRef
+	// All state is read-only after DB has been initially created.
+	numShards      int
+	partitionBytes int // The number of bytes of the key hash to use for partitioning purposes
+	shards         []*Shard
 }
 
-// NewDB creates a new DB with the given parameters. Dir must not already exist.
-func NewDB(blockSize uint64, cacheBlocks int, expiry time.Duration, dir string) (*DB, error) {
-	db := &DB{
-		blockSize:   blockSize,
-		cacheBlocks: cacheBlocks,
-		expiry:      expiry,
-		dir:         dir,
-
-		mu:       new(sync.Mutex),
-		memCache: make(map[string][]byte),
-		refCache: make(map[string]*RecordRef),
+func NewDB(numShards uint, blockSize, memCacheSize uint64, expiry time.Duration, dir string) (*DB, error) {
+	if numShards == 0 {
+		return nil, fmt.Errorf("%d is an invalid number of shards (must be positive)", numShards)
 	}
-	if err := os.Mkdir(dir, 0700); err != nil {
-		return nil, err
+	if numShards > 2e10 {
+		return nil, fmt.Errorf("%d seems like an unreasonably large number of shards", numShards)
 	}
-	wblock, err := NewWriteBlock(db.LogName(), db.blockSize)
-	if err != nil {
-		return nil, err
+	if !isPow2(numShards) {
+		return nil, fmt.Errorf("%d is an invalid number of shards (must be a power of 2)", numShards)
 	}
-	db.wblock = wblock
-	return db, nil
-}
 
-var (
-	ErrKeyNotExist = errors.New("key does not exist in the database")
-	ErrKeyExist    = errors.New("key already exists in the database")
-)
-
-//func (db *DB) Debug() {
-//fmt.Println()
-//fmt.Printf("seq: %d\n", db.seq)
-//fmt.Println("windex:")
-//spew.Dump(db.windex)
-//fmt.Printf("len rlogs = %d\n", len(db.rlogs))
-//fmt.Println("rindices:")
-//spew.Dump(db.rindices)
-//fmt.Printf("rblocksCached: %d\n", db.rblocksCached)
-//fmt.Println("memCache:")
-//spew.Dump(db.memCache)
-//fmt.Println("refCache:")
-//spew.Dump(db.refCache)
-//fmt.Println()
-//}
-
-func (db *DB) Get(k []byte) (v []byte, err error) {
-	db.mu.Lock()
-	defer db.mu.Unlock()
-
-	s := string(k)
-	if v, ok := db.memCache[s]; ok {
-		return v, nil
-	}
-	if ref, ok := db.refCache[s]; ok {
-		rblock := db.rblockForSeq(ref.seq)
-		r, err := rblock.ReadRecord(ref.offset)
+	shards := make([]*Shard, numShards)
+	for i := 0; i < numShards; i++ {
+		shardDir := filepath.Join(dir, fmt.Sprintf("shard%4d", i))
+		var err error
+		shards[i], err = NewShard(blockSize, memCacheSize/numShards, expiry, shardDir)
 		if err != nil {
 			return nil, err
 		}
-		return r.value, nil
 	}
-	return nil, ErrKeyNotExist
+
+	return &DB{
+		numShards:      numShards,
+		partitionBytes: (log2(numShards) + 7) / 8, // The number of bytes required to represent at least numShards
+		shards:         shards,
+	}, nil
 }
 
-func (db *DB) Put(k, v []byte) error {
-	db.mu.Lock()
-	defer db.mu.Unlock()
+func (db *DB) Get(k []byte) (v []byte, err error) { return db.chooseShard(k).Get(k) }
+func (db *DB) Put(k, v []byte) error              { return db.chooseShard(k).Put(k, v) }
 
-	s := string(k)
-
-	if _, ok := db.memCache[s]; ok {
-		return ErrKeyExist
+func (db *DB) chooseShard(key []byte) *Shard {
+	hash := sha1.Sum(key)
+	var n uint
+	for i := 0; i < db.partitionBytes; i++ {
+		n = n<<8 + uint(hash[i])
 	}
-	if _, ok := db.refCache[s]; ok {
-		return ErrKeyExist
-	}
-
-	r := &Record{
-		t:     time.Now(),
-		key:   k,
-		value: v,
-	}
-	offset, err := db.wblock.WriteRecord(r)
-	switch err {
-	case ErrWriteLogFull:
-		if err = db.Rotate(); err != nil {
-			return err
-		}
-		offset, err = db.wblock.WriteRecord(r)
-		if err != nil {
-			return err
-		}
-	case nil:
-	default:
-		return err
-	}
-	db.memCache[s] = v
-	db.refCache[s] = &RecordRef{seq: db.seq, offset: offset}
-	return nil
+	return db.shards[n%db.numShards]
 }
 
-// Rotate removes expired blocks, reopens the write log as a read log and adds it to the list, makes a fresh
-// write log, and increments the sequence number.
-func (db *DB) Rotate() error {
-	log.Printf("sequence %d; rotating...", db.seq)
-	// Add references to refCache.
-	for _, entry := range db.wblock.index {
-		db.refCache[entry.key] = &RecordRef{
-			seq:    db.seq,
-			offset: entry.offset,
-		}
+// isPow2 returns whether n is a power of 2.
+func isPow2(n uint) bool {
+	if n == 0 {
+		return true
 	}
-	// Rotate the block
-	rblock, err := db.wblock.ReopenAsReadBlock()
-	if err != nil {
-		return err
+	// https://graphics.stanford.edu/~seander/bithacks.html#CountBitsSetKernighan
+	var c int
+	for c = 0; v > 0; c++ {
+		v &= v - 1
 	}
-	db.rblocks = append([]*ReadBlock{rblock}, db.rblocks...)
-	db.seq++
-	db.rblocksCached++
-	db.wblock, err = NewWriteBlock(db.LogName(), db.blockSize)
-	if err != nil {
-		return err
-	}
-
-	if err := db.removeExpiredBlocks(); err != nil {
-		return err
-	}
-
-	// If we have an extra cached block, remove it.
-	if db.rblocksCached > db.cacheBlocks-1 {
-		if db.rblocksCached != db.cacheBlocks {
-			panic("too many blocks cached")
-		}
-		for _, entry := range db.rblocks[db.rblocksCached-1].index {
-			delete(db.memCache, entry.key)
-		}
-		db.rblocksCached--
-	}
-	return nil
+	return c == 1
 }
 
-func (db *DB) removeExpiredBlocks() error {
-	for i := len(db.rblocks) - 1; i >= 0; i-- {
-		// Remove the log file.
-		rblock := db.rblocks[i]
-		r, err := rblock.ReadFirstRecord()
-		if err != nil {
-			return err
-		}
-		if !db.Expired(r) {
-			break
-		}
-		if err := rblock.Close(); err != nil {
-			return err
-		}
-		if err := os.Remove(rblock.Filename()); err != nil {
-			return err
-		}
-		db.rblocks = db.rblocks[:i]
-		// Remove the entries in refCache and memCache as well as the index.
-		cached := i < db.rblocksCached
-		for _, entry := range rblock.index {
-			delete(db.refCache, entry.key)
-			if cached {
-				delete(db.memCache, entry.key)
-			}
-		}
-		if cached {
-			db.rblocksCached--
-		}
+func log2(n uint) uint {
+	// https://graphics.stanford.edu/~seander/bithacks.html#IntegerLogObvious
+	var r uint
+	for n >>= 1; n > 0; n >>= 1 {
+		r++
 	}
-	return nil
-}
-
-func (db *DB) Expired(r *Record) bool {
-	return time.Since(r.t) > db.expiry
-}
-
-func (db *DB) LogName() string {
-	return filepath.Join(db.dir, fmt.Sprintf("block-%d.log", db.seq))
-}
-
-func (db *DB) rblockForSeq(seq uint64) *ReadBlock {
-	return db.rblocks[int(seq-db.seq-1)]
+	return r
 }
