@@ -5,3 +5,5 @@ Very rough benchmark; just doing serial requests with random data and full read/
 * DEFLATE is very slow. Just using compress/flate with `DefaultCompression` ran about 1300 qps; whereas no
   compression was about 5000 qps.
 * Snappy is a lot faster; about 4000 qps.
+* Simple read/write bench on 4 cores with github.com/syndtr/goleveldb (no timestamps/expiry implemented, no
+  manual compaction) showed 6000 qps.
