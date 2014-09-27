@@ -36,7 +36,7 @@ func makeRequests(pool *redis.Pool, n int) {
 
 	for i := 0; i < n; i++ {
 		key := randStr(10)
-		val := randStr(1000)
+		val := make([]byte, 1000)
 		_, err := conn.Do("SET", key, val)
 		if err != nil {
 			log.Fatal(err)
