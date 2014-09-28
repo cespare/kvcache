@@ -71,22 +71,6 @@ var (
 	ErrKeyExist    = errors.New("key already exists in the database")
 )
 
-//func (db *DB) Debug() {
-//fmt.Println()
-//fmt.Printf("seq: %d\n", db.seq)
-//fmt.Println("windex:")
-//spew.Dump(db.windex)
-//fmt.Printf("len rlogs = %d\n", len(db.rlogs))
-//fmt.Println("rindices:")
-//spew.Dump(db.rindices)
-//fmt.Printf("rblocksCached: %d\n", db.rblocksCached)
-//fmt.Println("memCache:")
-//spew.Dump(db.memCache)
-//fmt.Println("refCache:")
-//spew.Dump(db.refCache)
-//fmt.Println()
-//}
-
 func (db *DB) Get(k []byte) (v []byte, err error) {
 	db.mu.Lock()
 	defer db.mu.Unlock()
@@ -186,15 +170,12 @@ func (db *DB) Rotate() error {
 
 func (db *DB) removeExpiredBlocks() error {
 	for i := len(db.rblocks) - 1; i >= 0; i-- {
-		// Remove the log file.
 		rblock := db.rblocks[i]
-		r, err := rblock.ReadFirstRecord()
-		if err != nil {
-			return err
-		}
-		if !db.Expired(r) {
+		// Check whether this whole block is expired by looking at the most recent timestamp.
+		if time.Since(rblock.lastTimestamp) <= db.expiry {
 			break
 		}
+		// Remove the log file.
 		if err := rblock.Close(); err != nil {
 			return err
 		}
@@ -217,12 +198,8 @@ func (db *DB) removeExpiredBlocks() error {
 	return nil
 }
 
-func (db *DB) Expired(r *Record) bool {
-	return time.Since(r.t) > db.expiry
-}
-
 func (db *DB) LogName() string {
-	return filepath.Join(db.dir, fmt.Sprintf("block-%d.log", db.seq))
+	return filepath.Join(db.dir, fmt.Sprintf("block%10d.log", db.seq))
 }
 
 func (db *DB) rblockForSeq(seq uint64) *ReadBlock {

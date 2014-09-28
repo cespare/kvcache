@@ -2,6 +2,7 @@ package main
 
 import (
 	"os"
+	"time"
 
 	"github.com/edsrzf/mmap-go"
 )
@@ -15,6 +16,7 @@ type WriteBlock struct {
 	*WriteLog
 	f     *os.File // WRONLY
 	index []IndexEntry
+	lastTimestamp time.Time
 }
 
 func NewWriteBlock(filename string, maxSize uint64) (*WriteBlock, error) {
@@ -38,6 +40,9 @@ func (wb *WriteBlock) WriteRecord(r *Record) (offset uint64, err error) {
 		return
 	}
 	wb.index = append(wb.index, IndexEntry{key: string(r.key), offset: offset})
+	if r.t.After(wb.lastTimestamp) {
+		wb.lastTimestamp = r.t
+	}
 	return offset, nil
 }
 
@@ -49,7 +54,7 @@ func (wb *WriteBlock) ReopenAsReadBlock() (*ReadBlock, error) {
 	if err := wb.Close(); err != nil {
 		return nil, err
 	}
-	return OpenReadBlock(wb.f.Name())
+	return OpenReadBlock(wb.f.Name(), wb.index)
 }
 
 type ReadBlock struct {
@@ -57,9 +62,10 @@ type ReadBlock struct {
 	f     *os.File // RDONLY
 	m     mmap.MMap
 	index []IndexEntry
+	lastTimestamp time.Time
 }
 
-func OpenReadBlock(filename string) (*ReadBlock, error) {
+func OpenReadBlock(filename string, index []IndexEntry) (*ReadBlock, error) {
 	f, err := os.Open(filename)
 	if err != nil {
 		return nil, err
@@ -69,11 +75,21 @@ func OpenReadBlock(filename string) (*ReadBlock, error) {
 		f.Close()
 		return nil, err
 	}
-	return &ReadBlock{
+	rb := &ReadBlock{
 		f:       f,
 		m:       m,
 		ReadLog: OpenReadLog([]byte(m)),
-	}, nil
+		index: index,
+	}
+	// Set the lastTimestamp by looking at the last record in the block
+	if len(index) > 0 {
+		record, err := rb.ReadRecord(index[len(index)-1].offset)
+		if err != nil {
+			return nil, err
+		}
+		rb.lastTimestamp = record.t
+	}
+	return rb, nil
 }
 
 func (rb *ReadBlock) Close() error {
