@@ -12,6 +12,18 @@ General implementation notes:
 - Key/value pairs have a fixed expiration duration
 - Key/value pairs are immutable, once written (until expired)
 - Key/value pairs are stored on disk in a rotating set of fixed-size append-only logs
-- The keys are associated with offsets into the log by an in-memory b-tree (can be reconstructed from the
+- The keys are associated with offsets into the log by an in-memory hashtable (can be reconstructed from the
   logs)
-- Recent key/value pairs are duplicated in another in-memory b-tree (with the complete value) for fast lookup
+- Recent key/value pairs are duplicated in another in-memory hashtable (with the complete value) for fast
+  lookup
+
+## TODO
+
+- log test
+- rename 'block' to 'chunk'
+- block test
+- db test
+- write index files (or write index to beginning of file)
+- reopen existing DB
+- benchmark again, including with ~30GB of data, on a longer-running server
+- run on demo server
