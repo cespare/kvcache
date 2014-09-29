@@ -60,7 +60,7 @@ func main() {
 	}
 	const N = 100000
 	const P = 4
-	if N % P != 0 {
+	if N%P != 0 {
 		log.Fatal("N must be divisible by P")
 	}
 	var wg sync.WaitGroup

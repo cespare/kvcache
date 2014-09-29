@@ -14,8 +14,8 @@ type IndexEntry struct {
 
 type WriteBlock struct {
 	*WriteLog
-	f     *os.File // WRONLY
-	index []IndexEntry
+	f             *os.File // WRONLY
+	index         []IndexEntry
 	lastTimestamp time.Time
 }
 
@@ -59,9 +59,9 @@ func (wb *WriteBlock) ReopenAsReadBlock() (*ReadBlock, error) {
 
 type ReadBlock struct {
 	*ReadLog
-	f     *os.File // RDONLY
-	m     mmap.MMap
-	index []IndexEntry
+	f             *os.File // RDONLY
+	m             mmap.MMap
+	index         []IndexEntry
 	lastTimestamp time.Time
 }
 
@@ -79,7 +79,7 @@ func OpenReadBlock(filename string, index []IndexEntry) (*ReadBlock, error) {
 		f:       f,
 		m:       m,
 		ReadLog: OpenReadLog([]byte(m)),
-		index: index,
+		index:   index,
 	}
 	// Set the lastTimestamp by looking at the last record in the block
 	if len(index) > 0 {

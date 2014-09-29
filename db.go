@@ -10,8 +10,6 @@ import (
 	"time"
 )
 
-// TODO: I could shard the DB on e.g. key[0] if lock contention becomes significant.
-
 type Record struct {
 	t     time.Time
 	key   []byte
