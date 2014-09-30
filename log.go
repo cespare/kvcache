@@ -131,7 +131,7 @@ var (
 func (rl *ReadLog) ReadRecord(offset uint64) (*Record, error) {
 	// TODO: Same sanity checking here as for WriteRecord.
 	b := rl.b[offset:]
-	t := time.Unix(0, int64(binary.BigEndian.Uint64(b[:8])))
+	t := time.Unix(0, int64(binary.BigEndian.Uint64(b[:8]))).UTC()
 
 	nk, n := binary.Uvarint(b[8:])
 	if n <= 0 {
@@ -157,5 +157,3 @@ func (rl *ReadLog) ReadRecord(offset uint64) (*Record, error) {
 		value: value,
 	}, nil
 }
-
-func (rl *ReadLog) ReadFirstRecord() (*Record, error) { return rl.ReadRecord(8) }

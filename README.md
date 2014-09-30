@@ -19,11 +19,11 @@ General implementation notes:
 
 ## TODO
 
-- log test
 - rename 'block' to 'chunk'
 - block test
 - db test
 - write index files (or write index to beginning of file)
 - reopen existing DB
+- TODOs
 - benchmark again, including with ~30GB of data, on a longer-running server
 - run on demo server
