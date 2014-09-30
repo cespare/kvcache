@@ -19,8 +19,7 @@ General implementation notes:
 
 ## TODO
 
-- rename 'block' to 'chunk'
-- block test
+- chunk test
 - db test
 - write index files (or write index to beginning of file)
 - reopen existing DB

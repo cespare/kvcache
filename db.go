@@ -23,18 +23,18 @@ type RecordRef struct {
 
 type DB struct {
 	// Immutable configuration
-	blockSize   uint64        // On-disk size limit for a block
-	cacheBlocks int           // Number of blocks to cache directly in memory
+	chunkSize   uint64        // On-disk size limit for a chunk
+	cacheChunks int           // Number of chunks to cache directly in memory
 	expiry      time.Duration // How long to keep data around at all
 	dir         string        // Where to keep database files
 
 	mu *sync.Mutex // Protects all of the following
 
-	// Block files
-	seq           uint64 // Current base sequence # for wblock; seq+i+1 is the sequence # for an rblock
-	wblock        *WriteBlock
-	rblocks       []*ReadBlock
-	rblocksCached int // wblock is always cached, so this should be <= cacheBlocks-1
+	// Chunk files
+	seq           uint64 // Current base sequence # for wchunk; seq+i+1 is the sequence # for an rchunk
+	wchunk        *WriteChunk
+	rchunks       []*ReadChunk
+	rchunksCached int // wchunk is always cached, so this should be <= cacheChunks-1
 
 	// Maps
 	memCache map[string][]byte
@@ -42,10 +42,10 @@ type DB struct {
 }
 
 // NewDB creates a new DB with the given parameters. Dir must not already exist.
-func NewDB(blockSize uint64, cacheBlocks int, expiry time.Duration, dir string) (*DB, error) {
+func NewDB(chunkSize uint64, cacheChunks int, expiry time.Duration, dir string) (*DB, error) {
 	db := &DB{
-		blockSize:   blockSize,
-		cacheBlocks: cacheBlocks,
+		chunkSize:   chunkSize,
+		cacheChunks: cacheChunks,
 		expiry:      expiry,
 		dir:         dir,
 
@@ -56,11 +56,11 @@ func NewDB(blockSize uint64, cacheBlocks int, expiry time.Duration, dir string) 
 	if err := os.Mkdir(dir, 0700); err != nil {
 		return nil, err
 	}
-	wblock, err := NewWriteBlock(db.LogName(), db.blockSize)
+	wchunk, err := NewWriteChunk(db.LogName(), db.chunkSize)
 	if err != nil {
 		return nil, err
 	}
-	db.wblock = wblock
+	db.wchunk = wchunk
 	return db, nil
 }
 
@@ -78,8 +78,8 @@ func (db *DB) Get(k []byte) (v []byte, err error) {
 		return v, nil
 	}
 	if ref, ok := db.refCache[s]; ok {
-		rblock := db.rblockForSeq(ref.seq)
-		r, err := rblock.ReadRecord(ref.offset)
+		rchunk := db.rchunkForSeq(ref.seq)
+		r, err := rchunk.ReadRecord(ref.offset)
 		if err != nil {
 			return nil, err
 		}
@@ -106,13 +106,13 @@ func (db *DB) Put(k, v []byte) error {
 		key:   k,
 		value: v,
 	}
-	offset, err := db.wblock.WriteRecord(r)
+	offset, err := db.wchunk.WriteRecord(r)
 	switch err {
 	case ErrWriteLogFull:
 		if err = db.Rotate(); err != nil {
 			return err
 		}
-		offset, err = db.wblock.WriteRecord(r)
+		offset, err = db.wchunk.WriteRecord(r)
 		if err != nil {
 			return err
 		}
@@ -125,81 +125,81 @@ func (db *DB) Put(k, v []byte) error {
 	return nil
 }
 
-// Rotate removes expired blocks, reopens the write log as a read log and adds it to the list, makes a fresh
+// Rotate removes expired chunks, reopens the write log as a read log and adds it to the list, makes a fresh
 // write log, and increments the sequence number.
 func (db *DB) Rotate() error {
 	log.Printf("sequence %d; rotating...", db.seq)
 	// Add references to refCache.
-	for _, entry := range db.wblock.index {
+	for _, entry := range db.wchunk.index {
 		db.refCache[entry.key] = &RecordRef{
 			seq:    db.seq,
 			offset: entry.offset,
 		}
 	}
-	// Rotate the block
-	rblock, err := db.wblock.ReopenAsReadBlock()
+	// Rotate the chunk
+	rchunk, err := db.wchunk.ReopenAsReadChunk()
 	if err != nil {
 		return err
 	}
-	db.rblocks = append([]*ReadBlock{rblock}, db.rblocks...)
+	db.rchunks = append([]*ReadChunk{rchunk}, db.rchunks...)
 	db.seq++
-	db.rblocksCached++
-	db.wblock, err = NewWriteBlock(db.LogName(), db.blockSize)
+	db.rchunksCached++
+	db.wchunk, err = NewWriteChunk(db.LogName(), db.chunkSize)
 	if err != nil {
 		return err
 	}
 
-	if err := db.removeExpiredBlocks(); err != nil {
+	if err := db.removeExpiredChunks(); err != nil {
 		return err
 	}
 
-	// If we have an extra cached block, remove it.
-	if db.rblocksCached > db.cacheBlocks-1 {
-		if db.rblocksCached != db.cacheBlocks {
-			panic("too many blocks cached")
+	// If we have an extra cached chunk, remove it.
+	if db.rchunksCached > db.cacheChunks-1 {
+		if db.rchunksCached != db.cacheChunks {
+			panic("too many chunks cached")
 		}
-		for _, entry := range db.rblocks[db.rblocksCached-1].index {
+		for _, entry := range db.rchunks[db.rchunksCached-1].index {
 			delete(db.memCache, entry.key)
 		}
-		db.rblocksCached--
+		db.rchunksCached--
 	}
 	return nil
 }
 
-func (db *DB) removeExpiredBlocks() error {
-	for i := len(db.rblocks) - 1; i >= 0; i-- {
-		rblock := db.rblocks[i]
-		// Check whether this whole block is expired by looking at the most recent timestamp.
-		if time.Since(rblock.lastTimestamp) <= db.expiry {
+func (db *DB) removeExpiredChunks() error {
+	for i := len(db.rchunks) - 1; i >= 0; i-- {
+		rchunk := db.rchunks[i]
+		// Check whether this whole chunk is expired by looking at the most recent timestamp.
+		if time.Since(rchunk.lastTimestamp) <= db.expiry {
 			break
 		}
 		// Remove the log file.
-		if err := rblock.Close(); err != nil {
+		if err := rchunk.Close(); err != nil {
 			return err
 		}
-		if err := os.Remove(rblock.Filename()); err != nil {
+		if err := os.Remove(rchunk.Filename()); err != nil {
 			return err
 		}
-		db.rblocks = db.rblocks[:i]
+		db.rchunks = db.rchunks[:i]
 		// Remove the entries in refCache and memCache as well as the index.
-		cached := i < db.rblocksCached
-		for _, entry := range rblock.index {
+		cached := i < db.rchunksCached
+		for _, entry := range rchunk.index {
 			delete(db.refCache, entry.key)
 			if cached {
 				delete(db.memCache, entry.key)
 			}
 		}
 		if cached {
-			db.rblocksCached--
+			db.rchunksCached--
 		}
 	}
 	return nil
 }
 
 func (db *DB) LogName() string {
-	return filepath.Join(db.dir, fmt.Sprintf("block%10d.log", db.seq))
+	return filepath.Join(db.dir, fmt.Sprintf("chunk%10d.log", db.seq))
 }
 
-func (db *DB) rblockForSeq(seq uint64) *ReadBlock {
-	return db.rblocks[int(seq-db.seq-1)]
+func (db *DB) rchunkForSeq(seq uint64) *ReadChunk {
+	return db.rchunks[int(seq-db.seq-1)]
 }

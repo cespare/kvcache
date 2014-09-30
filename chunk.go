@@ -12,14 +12,14 @@ type IndexEntry struct {
 	offset uint64
 }
 
-type WriteBlock struct {
+type WriteChunk struct {
 	*WriteLog
 	f             *os.File // WRONLY
 	index         []IndexEntry
 	lastTimestamp time.Time
 }
 
-func NewWriteBlock(filename string, maxSize uint64) (*WriteBlock, error) {
+func NewWriteChunk(filename string, maxSize uint64) (*WriteChunk, error) {
 	f, err := os.OpenFile(filename, os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0600)
 	if err != nil {
 		return nil, err
@@ -28,13 +28,13 @@ func NewWriteBlock(filename string, maxSize uint64) (*WriteBlock, error) {
 	if err != nil {
 		return nil, err
 	}
-	return &WriteBlock{
+	return &WriteChunk{
 		f:        f,
 		WriteLog: log,
 	}, nil
 }
 
-func (wb *WriteBlock) WriteRecord(r *Record) (offset uint64, err error) {
+func (wb *WriteChunk) WriteRecord(r *Record) (offset uint64, err error) {
 	offset, err = wb.WriteLog.WriteRecord(r)
 	if err != nil {
 		return
@@ -46,18 +46,18 @@ func (wb *WriteBlock) WriteRecord(r *Record) (offset uint64, err error) {
 	return offset, nil
 }
 
-func (wb *WriteBlock) Close() error {
+func (wb *WriteChunk) Close() error {
 	return wb.WriteLog.Close() // takes care of closing wb.f
 }
 
-func (wb *WriteBlock) ReopenAsReadBlock() (*ReadBlock, error) {
+func (wb *WriteChunk) ReopenAsReadChunk() (*ReadChunk, error) {
 	if err := wb.Close(); err != nil {
 		return nil, err
 	}
-	return OpenReadBlock(wb.f.Name(), wb.index)
+	return OpenReadChunk(wb.f.Name(), wb.index)
 }
 
-type ReadBlock struct {
+type ReadChunk struct {
 	*ReadLog
 	f             *os.File // RDONLY
 	m             mmap.MMap
@@ -65,7 +65,7 @@ type ReadBlock struct {
 	lastTimestamp time.Time
 }
 
-func OpenReadBlock(filename string, index []IndexEntry) (*ReadBlock, error) {
+func OpenReadChunk(filename string, index []IndexEntry) (*ReadChunk, error) {
 	f, err := os.Open(filename)
 	if err != nil {
 		return nil, err
@@ -75,13 +75,13 @@ func OpenReadBlock(filename string, index []IndexEntry) (*ReadBlock, error) {
 		f.Close()
 		return nil, err
 	}
-	rb := &ReadBlock{
+	rb := &ReadChunk{
 		f:       f,
 		m:       m,
 		ReadLog: OpenReadLog([]byte(m)),
 		index:   index,
 	}
-	// Set the lastTimestamp by looking at the last record in the block
+	// Set the lastTimestamp by looking at the last record in the chunk
 	if len(index) > 0 {
 		record, err := rb.ReadRecord(index[len(index)-1].offset)
 		if err != nil {
@@ -92,13 +92,13 @@ func OpenReadBlock(filename string, index []IndexEntry) (*ReadBlock, error) {
 	return rb, nil
 }
 
-func (rb *ReadBlock) Close() error {
+func (rb *ReadChunk) Close() error {
 	if err := rb.m.Unmap(); err != nil {
 		return err
 	}
 	return rb.f.Close()
 }
 
-func (rb *ReadBlock) Filename() string {
+func (rb *ReadChunk) Filename() string {
 	return rb.f.Name()
 }
