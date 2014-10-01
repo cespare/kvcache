@@ -11,7 +11,7 @@ import (
 	"code.google.com/p/snappy-go/snappy"
 )
 
-// This file implements a rotating, append-only log of expiring key/value pairs.
+// This file implements a rotating, append-only log of expiring key/val pairs.
 
 // The format of these logs is vaguely similar to git's pack file format.
 //
@@ -83,19 +83,19 @@ func (wl *WriteLog) WriteRecord(rec *Record) (offset uint64, err error) {
 	nk := binary.PutUvarint(scratch[8:], uint64(len(rec.key)))
 	copy(scratch[8+nk:], rec.key)
 
-	encodedValue, err := snappy.Encode(nil, rec.value)
+	encodedVal, err := snappy.Encode(nil, rec.val)
 	if err != nil {
 		// TODO: how can this happen?
 		panic("snappy encoding failed: " + err.Error())
 	}
 
-	nv := binary.PutUvarint(scratch[8+nk+len(rec.key):], uint64(len(encodedValue)))
+	nv := binary.PutUvarint(scratch[8+nk+len(rec.key):], uint64(len(encodedVal)))
 	scratch = scratch[:8+nk+len(rec.key)+nv]
 	if _, err := wl.Write(scratch); err != nil {
 		return 0, err
 	}
 
-	if _, err := wl.Write(encodedValue); err != nil {
+	if _, err := wl.Write(encodedVal); err != nil {
 		return 0, err
 	}
 
@@ -124,8 +124,8 @@ type ReadLog struct {
 func OpenReadLog(b []byte) *ReadLog { return &ReadLog{b} }
 
 var (
-	ErrBadRecordKeyLen   = errors.New("got bad value (or could not read) for record key length")
-	ErrBadRecordValueLen = errors.New("got bad value (or could not read) for record value length")
+	ErrBadRecordKeyLen = errors.New("got bad value (or could not read) for record key length")
+	ErrBadRecordValLen = errors.New("got bad value (or could not read) for record value length")
 )
 
 func (rl *ReadLog) ReadRecord(offset uint64) (*Record, error) {
@@ -143,17 +143,17 @@ func (rl *ReadLog) ReadRecord(offset uint64) (*Record, error) {
 	b = b[8+n+int(nk):]
 	nv, n := binary.Uvarint(b)
 	if n <= 0 {
-		return nil, ErrBadRecordValueLen
+		return nil, ErrBadRecordValLen
 	}
 
-	value, err := snappy.Decode(nil, b[n:n+int(nv)])
+	val, err := snappy.Decode(nil, b[n:n+int(nv)])
 	if err != nil {
 		return nil, err
 	}
 
 	return &Record{
-		t:     t,
-		key:   key,
-		value: value,
+		t:   t,
+		key: key,
+		val: val,
 	}, nil
 }

@@ -28,24 +28,24 @@ func TestDB(t *testing.T) {
 
 	// Put/Get some values in the first chunk. Values come out of cache.
 	now = ts("2014-09-21T00:00:00Z")
-	rotated, err := db.Put(testRecords[0].key, testRecords[0].value)
+	rotated, err := db.Put(testRecords[0].key, testRecords[0].val)
 	asrt.Equal(t, err, nil)
 	asrt.Equal(t, rotated, false)
 
 	v, cached, err := db.Get(testRecords[0].key)
 	asrt.Equal(t, err, nil)
 	asrt.Equal(t, cached, true)
-	asrt.Assert(t, bytes.Equal(v, testRecords[0].value))
+	asrt.Assert(t, bytes.Equal(v, testRecords[0].val))
 
 	now = ts("2014-09-21T00:00:01Z")
-	rotated, err = db.Put(testRecords[1].key, testRecords[1].value)
+	rotated, err = db.Put(testRecords[1].key, testRecords[1].val)
 	asrt.Equal(t, err, nil)
 	asrt.Equal(t, rotated, false)
 
 	v, cached, err = db.Get(testRecords[1].key)
 	asrt.Equal(t, err, nil)
 	asrt.Equal(t, cached, true)
-	asrt.Assert(t, bytes.Equal(v, testRecords[0].value))
+	asrt.Assert(t, bytes.Equal(v, testRecords[0].val))
 
 	for _, record := range testRecords[:2] {
 		_, err = db.Put(record.key, []byte("asdf"))
@@ -56,30 +56,30 @@ func TestDB(t *testing.T) {
 
 	// Rotate
 	now = ts("2014-09-21T00:00:02Z")
-	rotated, err = db.Put(testRecords[2].key, testRecords[3].value)
+	rotated, err = db.Put(testRecords[2].key, testRecords[3].val)
 	asrt.Equal(t, err, nil)
 	asrt.Equal(t, rotated, true)
 
 	v, cached, err = db.Get(testRecords[0].key)
 	asrt.Equal(t, err, nil)
 	asrt.Equal(t, cached, true)
-	asrt.Assert(t, bytes.Equal(v, testRecords[0].value))
+	asrt.Assert(t, bytes.Equal(v, testRecords[0].val))
 
 	v, cached, err = db.Get(testRecords[2].key)
 	asrt.Equal(t, err, nil)
 	asrt.Equal(t, cached, true)
-	asrt.Assert(t, bytes.Equal(v, testRecords[2].value))
+	asrt.Assert(t, bytes.Equal(v, testRecords[2].val))
 
 	asrt.DeepEqual(t, lsDir(dir), []string{"chunk0000000000.log", "chunk0000000001.log"})
 
 	now = ts("2014-09-21T00:00:03Z")
-	rotated, err = db.Put(testRecords[3].key, testRecords[3].value)
+	rotated, err = db.Put(testRecords[3].key, testRecords[3].val)
 	asrt.Equal(t, err, nil)
 	asrt.Equal(t, rotated, false)
 
 	// Rotate again
 	now = ts("2014-09-21T00:00:04Z")
-	rotated, err = db.Put(testRecords[4].key, testRecords[4].value)
+	rotated, err = db.Put(testRecords[4].key, testRecords[4].val)
 	asrt.Equal(t, err, nil)
 	asrt.Equal(t, rotated, true)
 
@@ -88,14 +88,14 @@ func TestDB(t *testing.T) {
 		v, cached, err = db.Get(record.key)
 		asrt.Equal(t, err, nil)
 		asrt.Equal(t, cached, false)
-		asrt.Assert(t, bytes.Equal(v, record.value))
+		asrt.Assert(t, bytes.Equal(v, record.val))
 	}
 
 	for _, record := range testRecords[2:] {
 		v, cached, err = db.Get(record.key)
 		asrt.Equal(t, err, nil)
 		asrt.Equal(t, cached, true)
-		asrt.Assert(t, bytes.Equal(v, record.value))
+		asrt.Assert(t, bytes.Equal(v, record.val))
 	}
 
 	// Close and check the data
@@ -109,6 +109,12 @@ func TestDB(t *testing.T) {
 		asrt.Equal(t, err, nil)
 		asrt.Equal(t, string(got), want)
 	}
+
+	// To test:
+	// - reopening the DB
+	// - expired cached values
+	// - expired non-cached values
+	// - deletion of expired blocks
 }
 
 // lsDir returns a sorted list of filenames in dir.

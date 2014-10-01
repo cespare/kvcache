@@ -11,9 +11,9 @@ import (
 )
 
 type Record struct {
-	t     time.Time
-	key   []byte
-	value []byte
+	t   time.Time
+	key []byte
+	val []byte
 }
 
 type RecordRef struct {
@@ -41,7 +41,7 @@ type DB struct {
 	rchunksCached int // wchunk is always cached, so this should be <= cacheChunks-1
 
 	// Maps
-	memCache map[string][]byte
+	memCache map[string]*Record
 	refCache map[string]*RecordRef
 
 	closed bool
@@ -59,7 +59,7 @@ func NewDB(chunkSize uint64, cacheChunks int, expiry time.Duration, dir string) 
 		since: time.Since,
 
 		mu:       new(sync.Mutex),
-		memCache: make(map[string][]byte),
+		memCache: make(map[string]*Record),
 		refCache: make(map[string]*RecordRef),
 	}
 	if err := os.Mkdir(dir, 0700); err != nil {
@@ -88,9 +88,11 @@ func (db *DB) Get(k []byte) (v []byte, cached bool, err error) {
 	}
 
 	s := string(k)
-	if v, ok := db.memCache[s]; ok {
-		// TODO: Need to store time as well, and check for expiry here.
-		return v, true, nil
+	if r, ok := db.memCache[s]; ok {
+		if db.since(r.t) > db.expiry {
+			return nil, false, ErrKeyNotExist
+		}
+		return r.val, true, nil
 	}
 	if ref, ok := db.refCache[s]; ok {
 		rchunk := db.rchunkForSeq(ref.seq)
@@ -101,7 +103,7 @@ func (db *DB) Get(k []byte) (v []byte, cached bool, err error) {
 		if db.since(r.t) > db.expiry {
 			return nil, false, ErrKeyNotExist
 		}
-		return r.value, false, nil
+		return r.val, false, nil
 	}
 	return nil, false, ErrKeyNotExist
 }
@@ -124,9 +126,9 @@ func (db *DB) Put(k, v []byte) (rotated bool, err error) {
 	}
 
 	r := &Record{
-		t:     db.now(),
-		key:   k,
-		value: v,
+		t:   db.now(),
+		key: k,
+		val: v,
 	}
 	offset, err := db.wchunk.WriteRecord(r)
 	switch err {
@@ -143,7 +145,7 @@ func (db *DB) Put(k, v []byte) (rotated bool, err error) {
 	default:
 		return rotated, err
 	}
-	db.memCache[s] = v
+	db.memCache[s] = r
 	db.refCache[s] = &RecordRef{seq: db.seq, offset: offset}
 	return rotated, nil
 }

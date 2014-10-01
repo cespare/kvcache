@@ -31,11 +31,11 @@ func NewServer(addr string) (*Server, error) {
 }
 
 type Request struct {
-	Type  RequestType
-	Key   []byte
-	Value []byte
-	Resp  chan *Response
-	Err   error // If there was an error reading the request, only this field is set.
+	Type RequestType
+	Key  []byte
+	Val  []byte
+	Resp chan *Response
+	Err  error // If there was an error reading the request, only this field is set.
 }
 
 type RequestType uint8
@@ -129,7 +129,7 @@ reqLoop:
 			} else {
 				switch r.Type {
 				case RequestSet:
-					if _, err := s.db.Put(r.Key, r.Value); err != nil {
+					if _, err := s.db.Put(r.Key, r.Val); err != nil {
 						resp = ResponseFromError(err)
 						break
 					}
@@ -141,7 +141,7 @@ reqLoop:
 						resp.Type = RedisBulk
 						resp.Msg = v
 					case ErrKeyNotExist:
-						// Redis null value
+						// Redis null val
 						resp.Type = RedisBulk
 					default:
 						resp = ResponseFromError(err)
@@ -230,7 +230,7 @@ func (r *Request) Parse(br *bufio.Reader) error {
 		}
 		r.Type = RequestSet
 		r.Key = []byte(array[1])
-		r.Value = []byte(array[2])
+		r.Val = []byte(array[2])
 	case "get":
 		if len(array) != 2 {
 			return ErrWrongNumArgs
