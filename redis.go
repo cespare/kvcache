@@ -3,6 +3,7 @@ package main
 import (
 	"bufio"
 	"bytes"
+	"errors"
 	"fmt"
 	"io"
 	"strconv"
@@ -11,8 +12,18 @@ import (
 // Routines for parsing the Redis protocol.
 // http://redis.io/topics/protocol
 
+const (
+	// For sanity
+	redisMaxBulkStrings = 10e6
+	redisMaxStringLen   = 1e6
+)
+
+var (
+	ErrRedisBadBulkStringCount = errors.New("client sent an unreasonable bulk string count")
+	ErrRedisBadStringLen       = errors.New("client sent an unreasonably string size")
+)
+
 func parseRedisArrayBulkString(br *bufio.Reader) ([]string, error) {
-	// TODO: Sanity check count and size in this function
 	if err := expectString(br, "*"); err != nil {
 		return nil, err
 	}
@@ -22,6 +33,9 @@ func parseRedisArrayBulkString(br *bufio.Reader) ([]string, error) {
 	}
 	if err := expectCRLF(br); err != nil {
 		return nil, err
+	}
+	if count < 0 || count > redisMaxBulkStrings {
+		return nil, ErrRedisBadBulkStringCount
 	}
 	var results []string
 	for i := 0; i < count; i++ {
@@ -34,6 +48,9 @@ func parseRedisArrayBulkString(br *bufio.Reader) ([]string, error) {
 		}
 		if err := expectCRLF(br); err != nil {
 			return nil, err
+		}
+		if size < 0 || size > redisMaxStringLen {
+			return nil, ErrRedisBadStringLen
 		}
 		b := make([]byte, size)
 		if _, err := io.ReadFull(br, b); err != nil {

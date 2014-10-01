@@ -19,6 +19,5 @@ General implementation notes:
 
 ## TODO
 
-- TODOs
 - benchmark again, including with ~30GB of data, on a longer-running server
 - run on demo server
