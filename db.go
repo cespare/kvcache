@@ -3,9 +3,11 @@ package main
 import (
 	"errors"
 	"fmt"
+	"io/ioutil"
 	"log"
 	"os"
 	"path/filepath"
+	"strings"
 	"sync"
 	"syscall"
 	"time"
@@ -61,16 +63,21 @@ func newDB(chunkSize uint64, expiry time.Duration, dir string) *DB {
 	}
 }
 
+var ErrDBDirExists = errors.New("DB dir already exists")
+
 // NewDB creates a new DB with the given parameters. Dir must not already exist.
 func NewDB(chunkSize uint64, expiry time.Duration, dir string) (*DB, error) {
-	db := newDB(chunkSize, expiry, dir)
 	if err := os.Mkdir(dir, 0700); err != nil {
+		if os.IsExist(err) {
+			return nil, ErrDBDirExists
+		}
 		return nil, err
 	}
+	db := newDB(chunkSize, expiry, dir)
 	if err := db.addFlock(); err != nil {
 		return nil, err
 	}
-	wchunk, err := NewWriteChunk(db.wlogName(), db.chunkSize)
+	wchunk, err := NewWriteChunk(db.logName(db.seq), db.chunkSize)
 	if err != nil {
 		return nil, err
 	}
@@ -78,10 +85,53 @@ func NewDB(chunkSize uint64, expiry time.Duration, dir string) (*DB, error) {
 	return db, nil
 }
 
+// OpenDB opens an existing DB, or else creates a new DB if dir does not exist.
 func OpenDB(chunkSize uint64, expiry time.Duration, dir string) (*DB, error) {
-	db := newDB(chunkSize, expiry, dir)
-	_ = db
-	panic("unimplemented")
+	db, err := NewDB(chunkSize, expiry, dir)
+	switch err {
+	case ErrDBDirExists:
+	case nil:
+		return db, err
+	default:
+		return nil, err
+	}
+	db = newDB(chunkSize, expiry, dir)
+	if err := db.addFlock(); err != nil {
+		return nil, err
+	}
+	seqs, err := findDBFiles(dir)
+	if err != nil {
+		return nil, err
+	}
+	if len(seqs) > 0 {
+		db.seq = seqs[len(seqs)-1] + 1
+	}
+	log.Printf("Found %d existing chunks; next seq=%d", len(seqs), db.seq)
+
+	// Iterate basenames from the back, because they're sorted and the highest-numbered
+	// go at the front of db.rchunks.
+	for i := len(seqs) - 1; i >= 0; i-- {
+		seq := seqs[i]
+		index, rchunk, err := LoadReadChunk(db.logName(seq))
+		if err != nil {
+			return nil, err
+		}
+		for _, entry := range index {
+			db.refCache[string(entry.key)] = &RecordRef{
+				seq:    seq,
+				offset: entry.offset,
+			}
+		}
+		db.rchunks = append(db.rchunks, rchunk)
+		log.Printf("Loaded chunk %d", seq)
+	}
+
+	wchunk, err := NewWriteChunk(db.logName(db.seq), db.chunkSize)
+	if err != nil {
+		return nil, err
+	}
+	db.wchunk = wchunk
+	return db, nil
 }
 
 var (
@@ -194,7 +244,7 @@ func (db *DB) Rotate() error {
 	}
 	db.rchunks = append([]*ReadChunk{rchunk}, db.rchunks...)
 	db.seq++
-	db.wchunk, err = NewWriteChunk(db.wlogName(), db.chunkSize)
+	db.wchunk, err = NewWriteChunk(db.logName(db.seq), db.chunkSize)
 	if err != nil {
 		return err
 	}
@@ -220,8 +270,10 @@ func (db *DB) removeExpiredChunks() error {
 		if err := rchunk.Close(); err != nil {
 			return err
 		}
-		if err := os.Remove(rchunk.Filename()); err != nil {
-			return err
+		for _, filename := range rchunk.Filenames() {
+			if err := os.Remove(filename); err != nil {
+				return err
+			}
 		}
 		db.rchunks = db.rchunks[:i]
 		// Remove the refCache entries
@@ -232,8 +284,10 @@ func (db *DB) removeExpiredChunks() error {
 	return nil
 }
 
-func (db *DB) wlogName() string {
-	return filepath.Join(db.dir, fmt.Sprintf("chunk%010d", db.seq))
+const chunkFormat = "chunk%010d"
+
+func (db *DB) logName(seq uint64) string {
+	return filepath.Join(db.dir, fmt.Sprintf(chunkFormat, seq))
 }
 
 func (db *DB) rchunkForSeq(seq uint64) *ReadChunk {
@@ -255,4 +309,66 @@ func (db *DB) addFlock() error {
 func (db *DB) removeFlock() error {
 	defer db.dirFile.Close()
 	return syscall.Flock(int(db.dirFile.Fd()), syscall.LOCK_UN)
+}
+
+var (
+	ErrDBFilesMismatch = errors.New("DB index/log files do not match")
+	ErrBadIdxFilename  = errors.New("DB index file (.idx) has an invalid name.")
+	ErrBadLogFilename  = errors.New("DB log file (.log) has an invalid name.")
+)
+
+// findDBFiles discovers and sanity-checks the DB files in dir.
+// Index and log files must be paired. There cannot be holes in the sequence.
+// Sequence numbers are returned in sorted order.
+func findDBFiles(dir string) (seqs []uint64, err error) {
+	var idxFiles []string
+	var logFiles []string
+	for _, filename := range lsDir(dir) {
+		f := filepath.Base(filename)
+		if strings.HasSuffix(f, ".idx") {
+			idxFiles = append(idxFiles, f)
+		}
+		if strings.HasSuffix(f, ".log") {
+			logFiles = append(logFiles, f)
+		}
+	}
+	if len(idxFiles) != len(logFiles) {
+		return nil, ErrDBFilesMismatch
+	}
+	for i, idx := range idxFiles {
+		basename := strings.TrimSuffix(idx, ".idx")
+		seq, err := seqFromBasename(basename)
+		if err != nil {
+			return nil, ErrBadIdxFilename
+		}
+		if i > 0 {
+			if seq != seqs[i-1]+1 {
+				return nil, fmt.Errorf("Invalid DB files: skip from seq %d to %d", seqs[i-1], seq)
+			}
+		}
+		if logFiles[i] != basename+".log" {
+			return nil, ErrDBFilesMismatch
+		}
+		seqs = append(seqs, seq)
+	}
+	return seqs, nil
+}
+
+// lsDir returns a sorted list of filenames in dir.
+func lsDir(dir string) []string {
+	files, err := ioutil.ReadDir(dir)
+	if err != nil {
+		return nil
+	}
+	names := make([]string, len(files))
+	for i, fi := range files {
+		names[i] = fi.Name()
+	}
+	return names
+}
+
+// seqFromBasename turns a base chunk name (like "chunk0000000123") into a sequence number (like 123).
+func seqFromBasename(basename string) (seq uint64, err error) {
+	_, err = fmt.Sscanf(basename, chunkFormat, &seq)
+	return
 }

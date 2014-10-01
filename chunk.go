@@ -2,6 +2,7 @@ package main
 
 import (
 	"os"
+	"strings"
 	"time"
 
 	"github.com/edsrzf/mmap-go"
@@ -76,27 +77,31 @@ type ReadChunk struct {
 	lastTimestamp time.Time
 }
 
-func LoadReadChunk(basename string) (*ReadChunk, error) {
+func LoadReadChunk(basename string) (index []IndexEntry, rc *ReadChunk, err error) {
 	f, err := os.Open(basename + ".idx")
 	if err != nil {
-		return nil, err
+		return nil, nil, err
 	}
 	defer f.Close()
 
 	index, logSize, err := ParseIndex(f)
 	if err != nil {
-		return nil, err
+		return nil, nil, err
 	}
 
 	f, err = os.Open(basename + ".log")
 	if err != nil {
-		return nil, err
+		return nil, nil, err
 	}
 	if err := VerifyLog(f, logSize); err != nil {
-		return nil, err
+		return nil, nil, err
 	}
 
-	return newReadChunk(f, index)
+	rc, err = newReadChunk(f, index)
+	if err != nil {
+		return nil, nil, err
+	}
+	return index, rc, nil
 }
 
 func OpenReadChunk(basename string, index []IndexEntry) (*ReadChunk, error) {
@@ -137,6 +142,8 @@ func (rc *ReadChunk) Close() error {
 	return rc.f.Close()
 }
 
-func (rc *ReadChunk) Filename() string {
-	return rc.f.Name()
+// Filenames returns the names of all files associated with rc.
+func (rc *ReadChunk) Filenames() []string {
+	basename := strings.TrimSuffix(rc.f.Name(), ".log")
+	return []string{basename + ".idx", basename + ".log"}
 }

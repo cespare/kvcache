@@ -104,22 +104,54 @@ func TestDB(t *testing.T) {
 		asrt.Equal(t, string(got), want)
 	}
 
-	// TODO: test:
-	// - reopening the DB
-	// - expired cached values
-	// - expired non-cached values
-	// - deletion of expired blocks
-}
+	// Reopen the DB
+	db, err = OpenDB(50, 10*time.Second, dir)
+	asrt.Equal(t, err, nil)
+	db.now = func() time.Time { return now }
+	db.since = func(t time.Time) time.Duration { return now.Sub(t) }
 
-// lsDir returns a sorted list of filenames in dir.
-func lsDir(dir string) []string {
-	files, err := ioutil.ReadDir(dir)
-	if err != nil {
-		return nil
+	for _, record := range testRecords {
+		v, cached, err = db.Get(record.key)
+		asrt.Equal(t, err, nil)
+		asrt.Equal(t, cached, false)
+		asrt.Assert(t, bytes.Equal(v, record.val))
 	}
-	names := make([]string, len(files))
-	for i, fi := range files {
-		names[i] = fi.Name()
+
+	// "Expire" everything older than 2014-09-21T00:00:03Z
+	now = ts("2014-09-21T00:00:13Z")
+
+	for _, record := range testRecords[:3] {
+		v, cached, err = db.Get(record.key)
+		asrt.Equal(t, err, ErrKeyNotExist)
 	}
-	return names
+
+	for _, record := range testRecords[3:] {
+		v, cached, err = db.Get(record.key)
+		asrt.Equal(t, err, nil)
+	}
+
+	// Rotate and ensure the same key/vals are visible, and that the
+	// fully expired block was deleted.
+	err = db.Rotate()
+	asrt.Equal(t, err, nil)
+
+	for _, record := range testRecords[:3] {
+		v, cached, err = db.Get(record.key)
+		asrt.Equal(t, err, ErrKeyNotExist)
+	}
+
+	for _, record := range testRecords[3:] {
+		v, cached, err = db.Get(record.key)
+		asrt.Equal(t, err, nil)
+	}
+
+	// Two new (empty) chunks were added: one was the new write chunk created on OpenDB;
+	// the other was made on rotation.
+	files = []string{"chunk0000000001.idx", "chunk0000000001.log", "chunk0000000002.idx", "chunk0000000002.log",
+		"chunk0000000003.idx", "chunk0000000003.log", "chunk0000000004.idx", "chunk0000000004.log"}
+	asrt.DeepEqual(t, lsDir(dir), files)
+
+	err = db.Close()
+	asrt.Equal(t, err, nil)
+	asrt.DeepEqual(t, lsDir(dir), files)
 }
