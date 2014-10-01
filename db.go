@@ -7,6 +7,7 @@ import (
 	"os"
 	"path/filepath"
 	"sync"
+	"syscall"
 	"time"
 )
 
@@ -41,7 +42,8 @@ type DB struct {
 	memCache map[string]*Record // entries in wchunk are cached directly
 	refCache map[string]*RecordRef
 
-	closed bool
+	closed  bool
+	dirFile *os.File // Handle for flocking the DB
 }
 
 func newDB(chunkSize uint64, expiry time.Duration, dir string) *DB {
@@ -63,6 +65,9 @@ func newDB(chunkSize uint64, expiry time.Duration, dir string) *DB {
 func NewDB(chunkSize uint64, expiry time.Duration, dir string) (*DB, error) {
 	db := newDB(chunkSize, expiry, dir)
 	if err := os.Mkdir(dir, 0700); err != nil {
+		return nil, err
+	}
+	if err := db.addFlock(); err != nil {
 		return nil, err
 	}
 	wchunk, err := NewWriteChunk(db.wlogName(), db.chunkSize)
@@ -168,7 +173,7 @@ func (db *DB) Close() error {
 			return err
 		}
 	}
-	return nil
+	return db.removeFlock()
 }
 
 // Rotate removes expired chunks, reopens the write log as a read log and adds it to the list, makes a fresh
@@ -233,4 +238,21 @@ func (db *DB) wlogName() string {
 
 func (db *DB) rchunkForSeq(seq uint64) *ReadChunk {
 	return db.rchunks[int(db.seq-seq-1)]
+}
+
+func (db *DB) addFlock() error {
+	f, err := os.Open(db.dir)
+	if err != nil {
+		return err
+	}
+	db.dirFile = f
+	if err := syscall.Flock(int(f.Fd()), syscall.LOCK_EX|syscall.LOCK_NB); err != nil {
+		return fmt.Errorf("cannot lock database dir; is it currently in use? (err = %v)", err)
+	}
+	return nil
+}
+
+func (db *DB) removeFlock() error {
+	defer db.dirFile.Close()
+	return syscall.Flock(int(db.dirFile.Fd()), syscall.LOCK_UN)
 }
