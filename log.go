@@ -76,8 +76,6 @@ import (
 // opening an existing set of logs can only be done when they are all completely written out.
 // We attempt to close the write log on shutdown (which includes writing out the index).
 
-// TODO: Periodic fsync?
-
 const (
 	// These constants are used for sanity checking inputs.
 	maxKeyLen = 100
@@ -145,8 +143,9 @@ func (wl *WriteLog) WriteRecord(rec *Record) (offset uint64, err error) {
 
 	encodedVal, err := snappy.Encode(nil, rec.val)
 	if err != nil {
-		// TODO: how can this happen?
-		panic("snappy encoding failed: " + err.Error())
+		// snappy.Encode never produces a non-nil error.
+		// https://code.google.com/p/snappy-go/issues/detail?id=8
+		panic("cannot happen")
 	}
 
 	nv := binary.PutUvarint(logScratch[8+nk+len(rec.key):], uint64(len(encodedVal)))
