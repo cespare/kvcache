@@ -84,15 +84,10 @@ func TestDB(t *testing.T) {
 	asrt.Equal(t, err, nil)
 	asrt.Equal(t, rotated, true)
 
-	v, cached, err = db.Get(testRecords[4].key)
-	asrt.Equal(t, err, nil)
-	asrt.Equal(t, cached, true)
-	asrt.Assert(t, bytes.Equal(v, testRecords[4].val))
-
-	for _, record := range testRecords[:4] {
+	for i, record := range testRecords {
 		v, cached, err = db.Get(record.key)
 		asrt.Equal(t, err, nil)
-		asrt.Equal(t, cached, false)
+		asrt.Equal(t, cached, i == 4)
 		asrt.Assert(t, bytes.Equal(v, record.val))
 	}
 
