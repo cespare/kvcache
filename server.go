@@ -3,6 +3,7 @@ package main
 import (
 	"bufio"
 	"errors"
+	"flag"
 	"io"
 	"log"
 	"net"
@@ -16,8 +17,8 @@ type Server struct {
 	db   *DB
 }
 
-func NewServer(addr string) (*Server, error) {
-	db, err := NewDB(100e3, time.Hour, "db")
+func NewServer(dir, addr string) (*Server, error) {
+	db, err := OpenDB(100e3, time.Hour, dir)
 	if err != nil {
 		return nil, err
 	}
@@ -276,9 +277,12 @@ func (r *Response) Write(w io.Writer) error {
 }
 
 func main() {
-	const addr = "localhost:5533"
-	log.Println("Now listening on", addr)
-	server, err := NewServer(addr)
+	addr := flag.String("addr", "localhost:5533", "Listen addr")
+	dir := flag.String("dir", "db", "DB directory")
+	flag.Parse()
+
+	log.Println("Now listening on", *addr)
+	server, err := NewServer(*dir, *addr)
 	if err != nil {
 		log.Fatal(err)
 	}
