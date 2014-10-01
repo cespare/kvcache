@@ -45,27 +45,27 @@ func NewWriteChunk(basename string, maxSize uint64) (*WriteChunk, error) {
 	}, nil
 }
 
-func (wb *WriteChunk) WriteRecord(r *Record) (offset uint64, err error) {
-	offset, err = wb.WriteLog.WriteRecord(r)
+func (wc *WriteChunk) WriteRecord(r *Record) (offset uint64, err error) {
+	offset, err = wc.WriteLog.WriteRecord(r)
 	if err != nil {
 		return
 	}
-	wb.index = append(wb.index, IndexEntry{key: string(r.key), offset: offset})
-	if r.t.After(wb.lastTimestamp) {
-		wb.lastTimestamp = r.t
+	wc.index = append(wc.index, IndexEntry{key: string(r.key), offset: offset})
+	if r.t.After(wc.lastTimestamp) {
+		wc.lastTimestamp = r.t
 	}
 	return offset, nil
 }
 
-func (wb *WriteChunk) Close() error {
-	return wb.WriteLog.Close() // takes care of closing wb.idxf and wb.logf
+func (wc *WriteChunk) Close() error {
+	return wc.WriteLog.Close() // takes care of closing wc.idxf and wc.logf
 }
 
-func (wb *WriteChunk) ReopenAsReadChunk() (*ReadChunk, error) {
-	if err := wb.Close(); err != nil {
+func (wc *WriteChunk) ReopenAsReadChunk() (*ReadChunk, error) {
+	if err := wc.Close(); err != nil {
 		return nil, err
 	}
-	return OpenReadChunk(wb.basename, wb.index)
+	return OpenReadChunk(wc.basename, wc.index)
 }
 
 type ReadChunk struct {
@@ -113,7 +113,7 @@ func newReadChunk(f *os.File, index []IndexEntry) (*ReadChunk, error) {
 		f.Close()
 		return nil, err
 	}
-	rb := &ReadChunk{
+	rc := &ReadChunk{
 		f:       f,
 		m:       m,
 		ReadLog: OpenReadLog([]byte(m)),
@@ -121,22 +121,22 @@ func newReadChunk(f *os.File, index []IndexEntry) (*ReadChunk, error) {
 	}
 	// Set the lastTimestamp by looking at the last record in the chunk
 	if len(index) > 0 {
-		record, err := rb.ReadRecord(index[len(index)-1].offset)
+		record, err := rc.ReadRecord(index[len(index)-1].offset)
 		if err != nil {
 			return nil, err
 		}
-		rb.lastTimestamp = record.t
+		rc.lastTimestamp = record.t
 	}
-	return rb, nil
+	return rc, nil
 }
 
-func (rb *ReadChunk) Close() error {
-	if err := rb.m.Unmap(); err != nil {
+func (rc *ReadChunk) Close() error {
+	if err := rc.m.Unmap(); err != nil {
 		return err
 	}
-	return rb.f.Close()
+	return rc.f.Close()
 }
 
-func (rb *ReadChunk) Filename() string {
-	return rb.f.Name()
+func (rc *ReadChunk) Filename() string {
+	return rc.f.Name()
 }
