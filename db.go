@@ -47,9 +47,8 @@ type DB struct {
 	closed bool
 }
 
-// NewDB creates a new DB with the given parameters. Dir must not already exist.
-func NewDB(chunkSize uint64, cacheChunks int, expiry time.Duration, dir string) (*DB, error) {
-	db := &DB{
+func newDB(chunkSize uint64, cacheChunks int, expiry time.Duration, dir string) *DB {
+	return &DB{
 		chunkSize:   chunkSize,
 		cacheChunks: cacheChunks,
 		expiry:      expiry,
@@ -62,6 +61,11 @@ func NewDB(chunkSize uint64, cacheChunks int, expiry time.Duration, dir string) 
 		memCache: make(map[string]*Record),
 		refCache: make(map[string]*RecordRef),
 	}
+}
+
+// NewDB creates a new DB with the given parameters. Dir must not already exist.
+func NewDB(chunkSize uint64, cacheChunks int, expiry time.Duration, dir string) (*DB, error) {
+	db := newDB(chunkSize, cacheChunks, expiry, dir)
 	if err := os.Mkdir(dir, 0700); err != nil {
 		return nil, err
 	}
@@ -71,6 +75,11 @@ func NewDB(chunkSize uint64, cacheChunks int, expiry time.Duration, dir string) 
 	}
 	db.wchunk = wchunk
 	return db, nil
+}
+
+func OpenDB(chunkSize uint64, cacheChunks int, expiry time.Duration, dir string) (*DB, error) {
+	db := newDB(chunkSize, cacheChunks, expiry, dir)
+	panic("unimplemented")
 }
 
 var (
@@ -111,7 +120,6 @@ func (db *DB) Get(k []byte) (v []byte, cached bool, err error) {
 func (db *DB) Put(k, v []byte) (rotated bool, err error) {
 	db.mu.Lock()
 	defer db.mu.Unlock()
-
 	if db.closed {
 		return false, ErrDBClosed
 	}
