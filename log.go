@@ -12,39 +12,68 @@ import (
 )
 
 // This file implements a rotating, append-only log of expiring key/val pairs.
+//
+// A log consists of two files of the same name except for different suffixes:
+// - A binary log containing the data, named xxx.log, and
+// - An index file containing offsets into the log, named xxx.idx.
 
 // The format of these logs is vaguely similar to git's pack file format.
 //
-// The general format of a logfile is
-// <header><record 0><record 1>...<record N><checksum>
+// The general format of both filetypes is:
+// <header><record 0><record 1>...<record N>[<trailer>]
 //
 // All multi-byte sequences are stored in network byte order (big endian).
 //
+// Index format
+// ------------
+//
 // The header consists of:
 //
-// - A 4-byte magic sequence: "k\336vs" (in decimal: [107, 222, 118, 115])
+// - A 4-byte magic sequence: "\336idx" (in decimal: [222, 105, 100, 120])
 // - A 4-byte version number (this is version 1)
 //
 // A record consists of:
 //
-// - 8-byte (uint64) nanosecond timestamp (monotonically increasing within the file)
+// - varint-encoded key size: K
+// - key (K bytes)
+// - uvarint-encoded delta-encoded offset (increasing within the index)
+//   For the first index record, this is the offset;
+//   for subsequent records, it is the difference from the prior offset.
+//
+// A trailer consists of:
+//
+// - varint-encoded -1 (to distinguish from a record)
+// - uvarint-encoded filesize of the paired log file
+// - 4-byte IEEE CRC-32 checksum of everything preceding in this index file.
+//
+// Log format
+// ----------
+//
+// The log header consists of:
+//
+// - A 4-byte magic sequence: "\336log" (in decimal: [107, 222, 118, 115])
+// - A 4-byte version number (this is version 1)
+//   The version number of the log must be identical to that of the index.
+//
+// A record consists of:
+//
+// - 8-byte (uint64) nanosecond timestamp  (monotonically increasing within the file)
 // - uvarint-encoded key size, K
-// - K bytes for the key
+// - key (K bytes)
 // - uvarint-encoded *compressed* value size, V
 // - V bytes of snappy-compressed data for the value
 //
-// The checksum is the 4-byte IEEE CRC-32 checksum of everything preceding it in the file.
+// The log format has no trailer.
 
-// The general flow is that a new WriteLog is opened and records are fed in until the maximum size is reached.
-// Then the file is closed and reopened as a ReadLog.
+// The general flow is that a new WriteLog is opened and records are fed in
+// until the maximum size is reached. Then the file is closed and reopened as a ReadLog.
+
+// The log format is intended to support crash recovery: a partially written index
+// can be used to decipher the log. This is not implemented, so for now,
+// opening an existing set of logs can only be done when they are all completely written out.
+// We attempt to close the write log on shutdown (which includes writing out the index).
 
 // TODO: Periodic fsync?
-
-// TODO: Reindexing a log (that is, reading a log and constructing the b-tree of keys and offsets, which we
-// might do on server boot, for instance) must necessarily involve reading the whole file and inflating all
-// the values. If this proves to be slow (likely) we can make it significantly faster by writing out an
-// auxiliary index file as we go, which only contains timestamps, keys, and value offsets. (This is analagous
-// to git's pack indexes.)
 
 type WriteLog struct {
 	w       io.WriteCloser
