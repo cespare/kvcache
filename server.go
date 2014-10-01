@@ -20,7 +20,7 @@ type Server struct {
 }
 
 func NewServer(addr string) (*Server, error) {
-	db, err := NewDB(100e3, 3, time.Hour, "db")
+	db, err := NewDB(100e3, time.Hour, "db")
 	if err != nil {
 		return nil, err
 	}

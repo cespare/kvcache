@@ -23,10 +23,9 @@ type RecordRef struct {
 
 type DB struct {
 	// Immutable configuration (once the DB is constructed)
-	chunkSize   uint64        // On-disk size limit for a chunk
-	cacheChunks int           // Number of chunks to cache directly in memory
-	expiry      time.Duration // How long to keep data around at all
-	dir         string        // Where to keep database files
+	chunkSize uint64        // On-disk size limit for a chunk
+	expiry    time.Duration // How long to keep data around at all
+	dir       string        // Where to keep database files
 
 	// Overridable by test functions
 	now   func() time.Time              // Called once on Put, for new records
@@ -35,24 +34,21 @@ type DB struct {
 	mu *sync.Mutex // Protects all of the following
 
 	// Chunk files
-	seq           uint64 // Current base sequence # for wchunk; seq+i+1 is the sequence # for an rchunk
-	wchunk        *WriteChunk
-	rchunks       []*ReadChunk
-	rchunksCached int // wchunk is always cached, so this should be <= cacheChunks-1
+	seq     uint64 // Current base sequence # for wchunk; seq+i+1 is the sequence # for an rchunk
+	wchunk  *WriteChunk
+	rchunks []*ReadChunk
 
-	// Maps
-	memCache map[string]*Record
+	memCache map[string]*Record // entries in wchunk are cached directly
 	refCache map[string]*RecordRef
 
 	closed bool
 }
 
-func newDB(chunkSize uint64, cacheChunks int, expiry time.Duration, dir string) *DB {
+func newDB(chunkSize uint64, expiry time.Duration, dir string) *DB {
 	return &DB{
-		chunkSize:   chunkSize,
-		cacheChunks: cacheChunks,
-		expiry:      expiry,
-		dir:         dir,
+		chunkSize: chunkSize,
+		expiry:    expiry,
+		dir:       dir,
 
 		now:   time.Now,
 		since: time.Since,
@@ -64,8 +60,8 @@ func newDB(chunkSize uint64, cacheChunks int, expiry time.Duration, dir string) 
 }
 
 // NewDB creates a new DB with the given parameters. Dir must not already exist.
-func NewDB(chunkSize uint64, cacheChunks int, expiry time.Duration, dir string) (*DB, error) {
-	db := newDB(chunkSize, cacheChunks, expiry, dir)
+func NewDB(chunkSize uint64, expiry time.Duration, dir string) (*DB, error) {
+	db := newDB(chunkSize, expiry, dir)
 	if err := os.Mkdir(dir, 0700); err != nil {
 		return nil, err
 	}
@@ -77,8 +73,9 @@ func NewDB(chunkSize uint64, cacheChunks int, expiry time.Duration, dir string) 
 	return db, nil
 }
 
-func OpenDB(chunkSize uint64, cacheChunks int, expiry time.Duration, dir string) (*DB, error) {
-	db := newDB(chunkSize, cacheChunks, expiry, dir)
+func OpenDB(chunkSize uint64, expiry time.Duration, dir string) (*DB, error) {
+	db := newDB(chunkSize, expiry, dir)
+	_ = db
 	panic("unimplemented")
 }
 
@@ -192,7 +189,6 @@ func (db *DB) Rotate() error {
 	}
 	db.rchunks = append([]*ReadChunk{rchunk}, db.rchunks...)
 	db.seq++
-	db.rchunksCached++
 	db.wchunk, err = NewWriteChunk(db.wlogName(), db.chunkSize)
 	if err != nil {
 		return err
@@ -202,16 +198,9 @@ func (db *DB) Rotate() error {
 		return err
 	}
 
-	// If we have an extra cached chunk, remove it.
-	if db.rchunksCached > db.cacheChunks-1 {
-		if db.rchunksCached != db.cacheChunks {
-			panic("too many chunks cached")
-		}
-		for _, entry := range db.rchunks[db.rchunksCached-1].index {
-			delete(db.memCache, entry.key)
-		}
-		db.rchunksCached--
-	}
+	// Clear the memCache. Size estimate based on previous cache.
+	db.memCache = make(map[string]*Record, len(db.memCache))
+
 	return nil
 }
 
@@ -230,16 +219,9 @@ func (db *DB) removeExpiredChunks() error {
 			return err
 		}
 		db.rchunks = db.rchunks[:i]
-		// Remove the entries in refCache and memCache as well as the index.
-		cached := i < db.rchunksCached
+		// Remove the refCache entries
 		for _, entry := range rchunk.index {
 			delete(db.refCache, entry.key)
-			if cached {
-				delete(db.memCache, entry.key)
-			}
-		}
-		if cached {
-			db.rchunksCached--
 		}
 	}
 	return nil

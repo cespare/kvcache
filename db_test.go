@@ -21,7 +21,7 @@ func TestDB(t *testing.T) {
 
 	// See log_test for info about the test data
 
-	db, err := NewDB(50, 2, 10*time.Second, dir)
+	db, err := NewDB(50, 10*time.Second, dir)
 	asrt.Equal(t, err, nil)
 	db.now = func() time.Time { return now }
 	db.since = func(t time.Time) time.Duration { return now.Sub(t) }
@@ -62,7 +62,7 @@ func TestDB(t *testing.T) {
 
 	v, cached, err = db.Get(testRecords[0].key)
 	asrt.Equal(t, err, nil)
-	asrt.Equal(t, cached, true)
+	asrt.Equal(t, cached, false)
 	asrt.Assert(t, bytes.Equal(v, testRecords[0].val))
 
 	v, cached, err = db.Get(testRecords[2].key)
@@ -84,18 +84,15 @@ func TestDB(t *testing.T) {
 	asrt.Equal(t, err, nil)
 	asrt.Equal(t, rotated, true)
 
-	// Third block is no longer cached
-	for _, record := range testRecords[:2] {
+	v, cached, err = db.Get(testRecords[4].key)
+	asrt.Equal(t, err, nil)
+	asrt.Equal(t, cached, true)
+	asrt.Assert(t, bytes.Equal(v, testRecords[4].val))
+
+	for _, record := range testRecords[:4] {
 		v, cached, err = db.Get(record.key)
 		asrt.Equal(t, err, nil)
 		asrt.Equal(t, cached, false)
-		asrt.Assert(t, bytes.Equal(v, record.val))
-	}
-
-	for _, record := range testRecords[2:] {
-		v, cached, err = db.Get(record.key)
-		asrt.Equal(t, err, nil)
-		asrt.Equal(t, cached, true)
 		asrt.Assert(t, bytes.Equal(v, record.val))
 	}
 
