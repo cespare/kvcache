@@ -3,6 +3,7 @@ package main
 import (
 	"bytes"
 	"io/ioutil"
+	"log"
 	"os"
 	"path/filepath"
 	"testing"
@@ -10,6 +11,8 @@ import (
 
 	"github.com/cespare/asrt"
 )
+
+func init() { log.SetOutput(ioutil.Discard) }
 
 func TestDB(t *testing.T) {
 	tempdir, err := ioutil.TempDir(".", "kvcache-test-")
