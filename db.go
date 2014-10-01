@@ -22,11 +22,15 @@ type RecordRef struct {
 }
 
 type DB struct {
-	// Immutable configuration
+	// Immutable configuration (once the DB is constructed)
 	chunkSize   uint64        // On-disk size limit for a chunk
 	cacheChunks int           // Number of chunks to cache directly in memory
 	expiry      time.Duration // How long to keep data around at all
 	dir         string        // Where to keep database files
+
+	// Overridable by test functions
+	now   func() time.Time              // Called once on Put, for new records
+	since func(time.Time) time.Duration // Called to check expiry, on Get and Rotate
 
 	mu *sync.Mutex // Protects all of the following
 
@@ -39,6 +43,8 @@ type DB struct {
 	// Maps
 	memCache map[string][]byte
 	refCache map[string]*RecordRef
+
+	closed bool
 }
 
 // NewDB creates a new DB with the given parameters. Dir must not already exist.
@@ -49,6 +55,9 @@ func NewDB(chunkSize uint64, cacheChunks int, expiry time.Duration, dir string) 
 		expiry:      expiry,
 		dir:         dir,
 
+		now:   time.Now,
+		since: time.Since,
+
 		mu:       new(sync.Mutex),
 		memCache: make(map[string][]byte),
 		refCache: make(map[string]*RecordRef),
@@ -56,7 +65,7 @@ func NewDB(chunkSize uint64, cacheChunks int, expiry time.Duration, dir string) 
 	if err := os.Mkdir(dir, 0700); err != nil {
 		return nil, err
 	}
-	wchunk, err := NewWriteChunk(db.LogName(), db.chunkSize)
+	wchunk, err := NewWriteChunk(db.wlogName(), db.chunkSize)
 	if err != nil {
 		return nil, err
 	}
@@ -67,42 +76,55 @@ func NewDB(chunkSize uint64, cacheChunks int, expiry time.Duration, dir string) 
 var (
 	ErrKeyNotExist = errors.New("key does not exist in the database")
 	ErrKeyExist    = errors.New("key already exists in the database")
+	ErrDBClosed    = errors.New("database is closed")
 )
 
-func (db *DB) Get(k []byte) (v []byte, err error) {
+func (db *DB) Get(k []byte) (v []byte, cached bool, err error) {
 	db.mu.Lock()
 	defer db.mu.Unlock()
 
+	if db.closed {
+		return nil, false, ErrDBClosed
+	}
+
 	s := string(k)
 	if v, ok := db.memCache[s]; ok {
-		return v, nil
+		// TODO: Need to store time as well, and check for expiry here.
+		return v, true, nil
 	}
 	if ref, ok := db.refCache[s]; ok {
 		rchunk := db.rchunkForSeq(ref.seq)
 		r, err := rchunk.ReadRecord(ref.offset)
 		if err != nil {
-			return nil, err
+			return nil, false, err
 		}
-		return r.value, nil
+		if db.since(r.t) > db.expiry {
+			return nil, false, ErrKeyNotExist
+		}
+		return r.value, false, nil
 	}
-	return nil, ErrKeyNotExist
+	return nil, false, ErrKeyNotExist
 }
 
-func (db *DB) Put(k, v []byte) error {
+func (db *DB) Put(k, v []byte) (rotated bool, err error) {
 	db.mu.Lock()
 	defer db.mu.Unlock()
+
+	if db.closed {
+		return false, ErrDBClosed
+	}
 
 	s := string(k)
 
 	if _, ok := db.memCache[s]; ok {
-		return ErrKeyExist
+		return rotated, ErrKeyExist
 	}
 	if _, ok := db.refCache[s]; ok {
-		return ErrKeyExist
+		return rotated, ErrKeyExist
 	}
 
 	r := &Record{
-		t:     time.Now(),
+		t:     db.now(),
 		key:   k,
 		value: v,
 	}
@@ -110,18 +132,35 @@ func (db *DB) Put(k, v []byte) error {
 	switch err {
 	case ErrWriteLogFull:
 		if err = db.Rotate(); err != nil {
-			return err
+			return rotated, err
 		}
+		rotated = true
 		offset, err = db.wchunk.WriteRecord(r)
 		if err != nil {
-			return err
+			return rotated, err
 		}
 	case nil:
 	default:
-		return err
+		return rotated, err
 	}
 	db.memCache[s] = v
 	db.refCache[s] = &RecordRef{seq: db.seq, offset: offset}
+	return rotated, nil
+}
+
+func (db *DB) Close() error {
+	db.mu.Lock()
+	defer db.mu.Unlock()
+
+	db.closed = true
+	if err := db.wchunk.Close(); err != nil {
+		return err
+	}
+	for _, rchunk := range db.rchunks {
+		if err := rchunk.Close(); err != nil {
+			return err
+		}
+	}
 	return nil
 }
 
@@ -144,7 +183,7 @@ func (db *DB) Rotate() error {
 	db.rchunks = append([]*ReadChunk{rchunk}, db.rchunks...)
 	db.seq++
 	db.rchunksCached++
-	db.wchunk, err = NewWriteChunk(db.LogName(), db.chunkSize)
+	db.wchunk, err = NewWriteChunk(db.wlogName(), db.chunkSize)
 	if err != nil {
 		return err
 	}
@@ -170,7 +209,7 @@ func (db *DB) removeExpiredChunks() error {
 	for i := len(db.rchunks) - 1; i >= 0; i-- {
 		rchunk := db.rchunks[i]
 		// Check whether this whole chunk is expired by looking at the most recent timestamp.
-		if time.Since(rchunk.lastTimestamp) <= db.expiry {
+		if db.since(rchunk.lastTimestamp) <= db.expiry {
 			break
 		}
 		// Remove the log file.
@@ -196,10 +235,10 @@ func (db *DB) removeExpiredChunks() error {
 	return nil
 }
 
-func (db *DB) LogName() string {
-	return filepath.Join(db.dir, fmt.Sprintf("chunk%10d.log", db.seq))
+func (db *DB) wlogName() string {
+	return filepath.Join(db.dir, fmt.Sprintf("chunk%010d.log", db.seq))
 }
 
 func (db *DB) rchunkForSeq(seq uint64) *ReadChunk {
-	return db.rchunks[int(seq-db.seq-1)]
+	return db.rchunks[int(db.seq-seq-1)]
 }

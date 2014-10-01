@@ -19,8 +19,6 @@ General implementation notes:
 
 ## TODO
 
-- chunk test
-- db test
 - write index files (or write index to beginning of file)
 - reopen existing DB
 - TODOs

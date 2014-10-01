@@ -128,13 +128,13 @@ reqLoop:
 			} else {
 				switch r.Type {
 				case RequestSet:
-					if err := s.db.Put(r.Key, r.Value); err != nil {
+					if _, err := s.db.Put(r.Key, r.Value); err != nil {
 						resp = ResponseFromError(err)
 						break
 					}
 					resp.Msg = []byte("OK")
 				case RequestGet:
-					v, err := s.db.Get(r.Key)
+					v, _, err := s.db.Get(r.Key)
 					switch err {
 					case nil:
 						resp.Type = RedisBulk
