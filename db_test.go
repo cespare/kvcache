@@ -52,7 +52,7 @@ func TestDB(t *testing.T) {
 		asrt.Equal(t, err, ErrKeyExist)
 	}
 
-	asrt.DeepEqual(t, lsDir(dir), []string{"chunk0000000000.log"})
+	asrt.DeepEqual(t, lsDir(dir), []string{"chunk0000000000.idx", "chunk0000000000.log"})
 
 	// Rotate
 	now = ts("2014-09-21T00:00:02Z")
@@ -70,7 +70,8 @@ func TestDB(t *testing.T) {
 	asrt.Equal(t, cached, true)
 	asrt.Assert(t, bytes.Equal(v, testRecords[2].val))
 
-	asrt.DeepEqual(t, lsDir(dir), []string{"chunk0000000000.log", "chunk0000000001.log"})
+	asrt.DeepEqual(t, lsDir(dir),
+		[]string{"chunk0000000000.idx", "chunk0000000000.log", "chunk0000000001.idx", "chunk0000000001.log"})
 
 	now = ts("2014-09-21T00:00:03Z")
 	rotated, err = db.Put(testRecords[3].key, testRecords[3].val)
@@ -102,15 +103,16 @@ func TestDB(t *testing.T) {
 	err = db.Close()
 	asrt.Equal(t, err, nil)
 
-	files := []string{"chunk0000000000.log", "chunk0000000001.log", "chunk0000000002.log"}
+	files := []string{"chunk0000000000.idx", "chunk0000000000.log", "chunk0000000001.idx",
+		"chunk0000000001.log", "chunk0000000002.idx", "chunk0000000002.log"}
 	asrt.DeepEqual(t, lsDir(dir), files)
 	for i, want := range []string{testLog1, testLog2, testLog3} {
-		got, err := ioutil.ReadFile(filepath.Join(dir, files[i]))
+		got, err := ioutil.ReadFile(filepath.Join(dir, files[i*2+1]))
 		asrt.Equal(t, err, nil)
 		asrt.Equal(t, string(got), want)
 	}
 
-	// To test:
+	// TODO: test:
 	// - reopening the DB
 	// - expired cached values
 	// - expired non-cached values

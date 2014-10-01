@@ -14,22 +14,33 @@ type IndexEntry struct {
 
 type WriteChunk struct {
 	*WriteLog
-	f             *os.File // WRONLY
+	basename string
+
+	// WRONLY files
+	idxf *os.File
+	logf *os.File
+
 	index         []IndexEntry
 	lastTimestamp time.Time
 }
 
-func NewWriteChunk(filename string, maxSize uint64) (*WriteChunk, error) {
-	f, err := os.OpenFile(filename, os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0600)
+func NewWriteChunk(basename string, maxSize uint64) (*WriteChunk, error) {
+	idxf, err := os.OpenFile(basename+".idx", os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0600)
 	if err != nil {
 		return nil, err
 	}
-	log, err := NewWriteLog(f, maxSize)
+	logf, err := os.OpenFile(basename+".log", os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0600)
+	if err != nil {
+		return nil, err
+	}
+	log, err := NewWriteLog(idxf, logf, maxSize)
 	if err != nil {
 		return nil, err
 	}
 	return &WriteChunk{
-		f:        f,
+		basename: basename,
+		idxf:     idxf,
+		logf:     logf,
 		WriteLog: log,
 	}, nil
 }
@@ -47,14 +58,14 @@ func (wb *WriteChunk) WriteRecord(r *Record) (offset uint64, err error) {
 }
 
 func (wb *WriteChunk) Close() error {
-	return wb.WriteLog.Close() // takes care of closing wb.f
+	return wb.WriteLog.Close() // takes care of closing wb.idxf and wb.logf
 }
 
 func (wb *WriteChunk) ReopenAsReadChunk() (*ReadChunk, error) {
 	if err := wb.Close(); err != nil {
 		return nil, err
 	}
-	return OpenReadChunk(wb.f.Name(), wb.index)
+	return OpenReadChunk(wb.basename, wb.index)
 }
 
 type ReadChunk struct {
@@ -65,11 +76,38 @@ type ReadChunk struct {
 	lastTimestamp time.Time
 }
 
-func OpenReadChunk(filename string, index []IndexEntry) (*ReadChunk, error) {
-	f, err := os.Open(filename)
+func LoadReadChunk(basename string) (*ReadChunk, error) {
+	f, err := os.Open(basename + ".idx")
 	if err != nil {
 		return nil, err
 	}
+	defer f.Close()
+
+	index, logSize, err := ParseIndex(f)
+	if err != nil {
+		return nil, err
+	}
+
+	f, err = os.Open(basename + ".log")
+	if err != nil {
+		return nil, err
+	}
+	if err := VerifyLog(f, logSize); err != nil {
+		return nil, err
+	}
+
+	return newReadChunk(f, index)
+}
+
+func OpenReadChunk(basename string, index []IndexEntry) (*ReadChunk, error) {
+	f, err := os.Open(basename + ".log")
+	if err != nil {
+		return nil, err
+	}
+	return newReadChunk(f, index)
+}
+
+func newReadChunk(f *os.File, index []IndexEntry) (*ReadChunk, error) {
 	m, err := mmap.Map(f, mmap.RDONLY, 0)
 	if err != nil {
 		f.Close()

@@ -19,8 +19,6 @@ General implementation notes:
 
 ## TODO
 
-- write index files (or write index to beginning of file)
-- reopen existing DB
 - TODOs
 - benchmark again, including with ~30GB of data, on a longer-running server
 - run on demo server

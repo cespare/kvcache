@@ -1,11 +1,14 @@
 package main
 
 import (
+	"bufio"
+	"bytes"
 	"encoding/binary"
 	"errors"
 	"hash"
 	"hash/crc32"
 	"io"
+	"os"
 	"time"
 
 	"code.google.com/p/snappy-go/snappy"
@@ -36,7 +39,7 @@ import (
 //
 // - varint-encoded key size: K
 // - key (K bytes)
-// - uvarint-encoded delta-encoded offset (increasing within the index)
+// - uvarint-encoded offset delta (increasing within the index)
 //   For the first index record, this is the offset;
 //   for subsequent records, it is the difference from the prior offset.
 //
@@ -75,42 +78,70 @@ import (
 
 // TODO: Periodic fsync?
 
+const (
+	// These constants are used for sanity checking inputs.
+	maxKeyLen = 100
+	maxValLen = 1e6 // 1MB
+)
+
 type WriteLog struct {
-	w       io.WriteCloser
-	crc     hash.Hash32 // Running CRC-32 checksum
-	size    uint64
-	maxSize uint64
+	logw       *sizeWriteCloser
+	idxw       *crcWriteCloser
+	maxSize    uint64
+	lastOffset uint64
 }
 
-func NewWriteLog(w io.WriteCloser, maxSize uint64) (*WriteLog, error) {
+func NewWriteLog(idxWriter, logWriter io.WriteCloser, maxSize uint64) (*WriteLog, error) {
 	wl := &WriteLog{
-		w:       w,
-		crc:     crc32.NewIEEE(),
+		logw:    &sizeWriteCloser{logWriter, 0},
+		idxw:    &crcWriteCloser{idxWriter, crc32.NewIEEE()},
 		maxSize: maxSize,
 	}
 	header := make([]byte, 8)
-	copy(header, "k\336vs")
 	binary.BigEndian.PutUint32(header[4:], 1)
-	if _, err := wl.Write(header); err != nil {
+
+	// Write index header
+	copy(header, "\336idx")
+	if _, err := wl.idxw.Write(header); err != nil {
+		return nil, err
+	}
+
+	// Write log header
+	copy(header, "\336log")
+	if _, err := wl.logw.Write(header); err != nil {
 		return nil, err
 	}
 	return wl, nil
 }
 
-var ErrWriteLogFull = errors.New("write log is filled to max capacity")
+var (
+	ErrKeyTooLong   = errors.New("key is too long")
+	ErrValTooLong   = errors.New("value is too long")
+	ErrWriteLogFull = errors.New("write log is filled to max capacity")
+)
 
 func (wl *WriteLog) WriteRecord(rec *Record) (offset uint64, err error) {
-	// TODO: Come up with some hard upper bounds for key and value sizes and enforce above this in the database.
-	// Then it's ok to ignore the fact that this method panics for very large keys/values (when the uvarint
-	// sizes take > 8 bytes).
-	if wl.size >= wl.maxSize {
+	if len(rec.key) > maxKeyLen {
+		return 0, ErrKeyTooLong
+	}
+	if len(rec.val) > maxValLen {
+		return 0, ErrValTooLong
+	}
+
+	offset = wl.logw.Size()
+	if offset >= wl.maxSize {
 		return 0, ErrWriteLogFull
 	}
-	sizeBefore := wl.size
-	scratch := make([]byte, 8+8+len(rec.key)+8) // Upper-bound guess for everything before the value
-	binary.BigEndian.PutUint64(scratch, uint64(rec.t.UnixNano()))
-	nk := binary.PutUvarint(scratch[8:], uint64(len(rec.key)))
-	copy(scratch[8+nk:], rec.key)
+
+	// The size is an upper bound for everything before the value.
+	// It is also large enough to encode the entire index record.
+	scratch := make([]byte, 8+8+len(rec.key)+8)
+
+	// Write to the log
+	logScratch := scratch
+	binary.BigEndian.PutUint64(logScratch, uint64(rec.t.UnixNano()))
+	nk := binary.PutUvarint(logScratch[8:], uint64(len(rec.key)))
+	copy(logScratch[8+nk:], rec.key)
 
 	encodedVal, err := snappy.Encode(nil, rec.val)
 	if err != nil {
@@ -118,32 +149,168 @@ func (wl *WriteLog) WriteRecord(rec *Record) (offset uint64, err error) {
 		panic("snappy encoding failed: " + err.Error())
 	}
 
-	nv := binary.PutUvarint(scratch[8+nk+len(rec.key):], uint64(len(encodedVal)))
-	scratch = scratch[:8+nk+len(rec.key)+nv]
-	if _, err := wl.Write(scratch); err != nil {
+	nv := binary.PutUvarint(logScratch[8+nk+len(rec.key):], uint64(len(encodedVal)))
+	logScratch = logScratch[:8+nk+len(rec.key)+nv]
+	if _, err := wl.logw.Write(logScratch); err != nil {
+		return 0, err
+	}
+	if _, err := wl.logw.Write(encodedVal); err != nil {
 		return 0, err
 	}
 
-	if _, err := wl.Write(encodedVal); err != nil {
+	// Write to the index
+	idxScratch := scratch
+	nk = binary.PutVarint(idxScratch, int64(len(rec.key)))
+	copy(idxScratch[nk:], rec.key)
+
+	if offset <= wl.lastOffset {
+		panic("offset is smaller than lastOffset")
+	}
+	off := offset - wl.lastOffset
+	wl.lastOffset = offset
+	no := binary.PutUvarint(idxScratch[nk+len(rec.key):], off)
+	idxScratch = idxScratch[:nk+len(rec.key)+no]
+	if _, err := wl.idxw.Write(idxScratch); err != nil {
 		return 0, err
 	}
 
-	return sizeBefore, nil
+	return offset, nil
 }
 
 func (wl *WriteLog) Close() error {
-	sum := wl.crc.Sum(nil)
-	if _, err := wl.w.Write(sum); err != nil {
+	if err := wl.logw.Close(); err != nil {
 		return err
 	}
-	return wl.w.Close()
+	scratch := make([]byte, 16)
+	n := binary.PutVarint(scratch, -1)
+	n += binary.PutUvarint(scratch[n:], wl.logw.Size())
+	if _, err := wl.idxw.Write(scratch[:n]); err != nil {
+		return err
+	}
+	if _, err := wl.idxw.Write(wl.idxw.Sum()); err != nil {
+		return err
+	}
+	return wl.idxw.Close()
 }
 
-func (wl *WriteLog) Write(b []byte) (n int, err error) {
-	n, err = wl.w.Write(b)
-	wl.crc.Write(b[:n])
-	wl.size += uint64(n)
-	return
+var (
+	ErrBadMagic         = errors.New("log/index file had a bad magic value")
+	ErrBadVersion       = errors.New("log/index file had a version not equal to 1")
+	ErrIncompleteIndex  = errors.New("index file is incomplete")
+	ErrCorruptIndex     = errors.New("encountered an invalid index record")
+	ErrChecksumMismatch = errors.New("index checksum does not match contents")
+	ErrExtraContent     = errors.New("junk data at end of index file")
+)
+
+func ParseIndex(r io.Reader) (index []IndexEntry, logSize uint64, err error) {
+	br := bufio.NewReader(r)
+	defer func() {
+		if err == io.EOF {
+			err = ErrIncompleteIndex
+		}
+	}()
+	crc := crc32.NewIEEE()
+	var header []byte
+	header, err = checkHeader(br, "\336idx")
+	if err != nil {
+		return
+	}
+	crc.Write(header)
+
+	var offset uint64
+	for {
+		// Read the key
+		var nk int64
+		byteRdr := newByteReader(br)
+		nk, err = binary.ReadVarint(byteRdr)
+		if err != nil {
+			return
+		}
+		crc.Write(byteRdr.Bytes())
+		if nk == -1 {
+			break
+		}
+		if nk < 0 || nk > maxKeyLen {
+			return nil, 0, ErrCorruptIndex
+		}
+		key := make([]byte, int(nk))
+		if _, err = io.ReadFull(br, key); err != nil {
+			return
+		}
+		crc.Write(key)
+
+		// Read the offset
+		var off uint64
+		byteRdr = newByteReader(br)
+		off, err = binary.ReadUvarint(byteRdr)
+		if err != nil {
+			return
+		}
+		offset += off
+		crc.Write(byteRdr.Bytes())
+
+		index = append(index, IndexEntry{
+			key:    string(key),
+			offset: offset,
+		})
+	}
+
+	// Read log size
+	byteRdr := newByteReader(br)
+	logSize, err = binary.ReadUvarint(byteRdr)
+	if err != nil {
+		return
+	}
+	crc.Write(byteRdr.Bytes())
+
+	// Read and verify CRC
+	checksum := make([]byte, 4)
+	if _, err = io.ReadFull(br, checksum); err != nil {
+		return
+	}
+	if !bytes.Equal(crc.Sum(nil), checksum) {
+		return nil, 0, ErrChecksumMismatch
+	}
+	if _, err = br.ReadByte(); err != io.EOF {
+		return nil, 0, ErrExtraContent
+	}
+	return index, logSize, nil
+}
+
+var (
+	ErrSizeMismatch = errors.New("log size does not match the index")
+)
+
+func VerifyLog(r io.ReadSeeker, size uint64) error {
+	_, err := checkHeader(r, "\336log")
+	if err != nil {
+		return err
+	}
+	n, err := r.Seek(0, os.SEEK_END)
+	if err != nil {
+		return err
+	}
+	if _, err := r.Seek(0, os.SEEK_SET); err != nil {
+		return err
+	}
+	if uint64(n) != size {
+		return ErrSizeMismatch
+	}
+	return nil
+}
+
+func checkHeader(r io.Reader, magic string) (header []byte, err error) {
+	header = make([]byte, 8)
+	if _, err = io.ReadFull(r, header); err != nil {
+		return
+	}
+	if string(header[:4]) != magic {
+		return nil, ErrBadMagic
+	}
+	if string(header[4:]) != "\x00\x00\x00\x01" {
+		return nil, ErrBadVersion
+	}
+	return header, nil
 }
 
 type ReadLog struct {
@@ -158,12 +325,11 @@ var (
 )
 
 func (rl *ReadLog) ReadRecord(offset uint64) (*Record, error) {
-	// TODO: Same sanity checking here as for WriteRecord.
 	b := rl.b[offset:]
 	t := time.Unix(0, int64(binary.BigEndian.Uint64(b[:8]))).UTC()
 
 	nk, n := binary.Uvarint(b[8:])
-	if n <= 0 {
+	if n <= 0 || nk > maxKeyLen {
 		return nil, ErrBadRecordKeyLen
 	}
 	key := make([]byte, nk)
@@ -171,7 +337,7 @@ func (rl *ReadLog) ReadRecord(offset uint64) (*Record, error) {
 
 	b = b[8+n+int(nk):]
 	nv, n := binary.Uvarint(b)
-	if n <= 0 {
+	if n <= 0 || nv > maxValLen {
 		return nil, ErrBadRecordValLen
 	}
 
@@ -185,4 +351,57 @@ func (rl *ReadLog) ReadRecord(offset uint64) (*Record, error) {
 		key: key,
 		val: val,
 	}, nil
+}
+
+// A sizeWriteCloser is an io.WriteCloser that tracks its written size.
+type sizeWriteCloser struct {
+	io.WriteCloser
+	size uint64
+}
+
+func (sw *sizeWriteCloser) Size() uint64 { return sw.size }
+
+func (sw *sizeWriteCloser) Write(b []byte) (n int, err error) {
+	n, err = sw.WriteCloser.Write(b)
+	sw.size += uint64(n)
+	return
+}
+
+// A crcWriteCloser is an io.WriteCloser that maintains an IEEE CRC-32 checksum of the written contents.
+type crcWriteCloser struct {
+	io.WriteCloser
+	crc hash.Hash32 // Running CRC-32 checksum of the index
+}
+
+func (cw *crcWriteCloser) Write(b []byte) (n int, err error) {
+	n, err = cw.WriteCloser.Write(b)
+	cw.crc.Write(b[:n])
+	return
+}
+
+func (cw *crcWriteCloser) Sum() []byte {
+	return cw.crc.Sum(nil)
+}
+
+// A byteReader is an io.ByteReader that remembers what bytes it has read.
+type byteReader struct {
+	r io.ByteReader
+	b []byte
+}
+
+func newByteReader(r io.ByteReader) *byteReader {
+	return &byteReader{r, nil}
+}
+
+func (br *byteReader) ReadByte() (byte, error) {
+	c, err := br.r.ReadByte()
+	if err != nil {
+		return 0, err
+	}
+	br.b = append(br.b, c)
+	return c, nil
+}
+
+func (br *byteReader) Bytes() []byte {
+	return br.b
 }

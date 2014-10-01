@@ -238,7 +238,7 @@ func (db *DB) removeExpiredChunks() error {
 }
 
 func (db *DB) wlogName() string {
-	return filepath.Join(db.dir, fmt.Sprintf("chunk%010d.log", db.seq))
+	return filepath.Join(db.dir, fmt.Sprintf("chunk%010d", db.seq))
 }
 
 func (db *DB) rchunkForSeq(seq uint64) *ReadChunk {

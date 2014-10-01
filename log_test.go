@@ -2,6 +2,7 @@ package main
 
 import (
 	"bytes"
+	"strings"
 	"testing"
 	"time"
 
@@ -42,28 +43,37 @@ var testRecords = []*Record{
 }
 
 const (
-	testLog1 = "k\336vs\x00\x00\x00\x01" + // header
+	testLog1 = "\336log\x00\x00\x00\x01" + // header
 		"\x13\x95\xcb\x4f\x5e\x92\x00\x00" + "\x04key1" + "\x13" + testSnappyVal + // record 1
-		"\x13\x95\xcb\x4f\x9a\x2c\xca\x00" + "\x04key2" + "\x13" + testSnappyVal + // record 2
-		"\xec\x5a\x07\x69"
-	testLog2 = "k\336vs\x00\x00\x00\x01" + // header
+		"\x13\x95\xcb\x4f\x9a\x2c\xca\x00" + "\x04key2" + "\x13" + testSnappyVal // record 2
+	testIdx1 = "\336idx\x00\x00\x00\x01" + // header
+		"\x08key1\x08" + // record 1
+		"\x08key2\x21" + // record 2
+		"\x01\x4a\xf6\xb7\xa6\x83" // trailer
+	testLog2 = "\336log\x00\x00\x00\x01" + // header
 		"\x13\x95\xcb\x4f\xd5\xc7\x94\x00" + "\x04key3" + "\x13" + testSnappyVal + // record 3
-		"\x13\x95\xcb\x50\x11\x62\x5e\x00" + "\x04key4" + "\x13" + testSnappyVal + // record 4
-		"\xb2\x1e\xd8\x14"
-	testLog3 = "k\336vs\x00\x00\x00\x01" + // header
-		"\x13\x95\xcb\x50\x4c\xfd\x28\x00" + "\x04key5" + "\x13" + testSnappyVal + // record 5
-		"\x03\xb8\x73\xec"
+		"\x13\x95\xcb\x50\x11\x62\x5e\x00" + "\x04key4" + "\x13" + testSnappyVal // record 4
+	testIdx2 = "\336idx\x00\x00\x00\x01" + // header
+		"\x08key2\x08" + // record 3
+		"\x08key3\x21" + // record 4
+		"\x01\x4a\xd7\x29\x29\x62" // trailer
+	testLog3 = "\336log\x00\x00\x00\x01" + // header
+		"\x13\x95\xcb\x50\x4c\xfd\x28\x00" + "\x04key5" + "\x13" + testSnappyVal // record 5
+	testIdx3 = "\336idx\x00\x00\x00\x01" + // header
+		"\x08key5\x08" + // record 5
+		"\x01\x29\x6a\xcc\x9e\x81" // trailer
 )
 
-func TestReadWriteLog(t *testing.T) {
-	buf := buffer{new(bytes.Buffer)}
-	wl, err := NewWriteLog(&buf, 50) // Big enough for one records only.
-	asrt.Equal(t, err, nil)
+const (
+	headerLen = 8
+	recordLen = 8 + 1 + 4 + 1 + len(testSnappyVal) // 33
+)
 
-	const (
-		headerLen = 8
-		recordLen = 8 + 1 + 4 + 1 + len(testSnappyVal) // 33
-	)
+func TestWriteLog(t *testing.T) {
+	idxBuf := buffer{new(bytes.Buffer)}
+	logBuf := buffer{new(bytes.Buffer)}
+	wl, err := NewWriteLog(&idxBuf, &logBuf, 50) // Big enough for one record only.
+	asrt.Equal(t, err, nil)
 
 	// Write some vals
 	offset, err := wl.WriteRecord(testRecords[0])
@@ -82,10 +92,28 @@ func TestReadWriteLog(t *testing.T) {
 	asrt.Equal(t, err, nil)
 
 	// Check the written log
-	asrt.Equal(t, buf.String(), testLog1)
+	asrt.Equal(t, idxBuf.String(), testIdx1)
+	asrt.Equal(t, logBuf.String(), testLog1)
+}
 
-	// Reading
-	rl := OpenReadLog(buf.Bytes())
+func TestParseIndex(t *testing.T) {
+	index, logSize, err := ParseIndex(strings.NewReader(testIdx1))
+	asrt.Equal(t, err, nil)
+	asrt.Assert(t, logSize == 74)
+	asrt.DeepEqual(t, index, []IndexEntry{
+		{"key1", 8},
+		{"key2", 41},
+	})
+}
+
+func TestVerifyLog(t *testing.T) {
+	err := VerifyLog(strings.NewReader(testLog1), 74)
+	asrt.Equal(t, err, nil)
+}
+
+func TestReadLog(t *testing.T) {
+	// Log reading
+	rl := OpenReadLog([]byte(testLog1))
 
 	rec, err := rl.ReadRecord(headerLen)
 	asrt.Equal(t, err, nil)
