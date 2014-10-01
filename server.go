@@ -11,7 +11,8 @@ import (
 	"time"
 )
 
-// TODO: Logging should be configurable (Server has a modifiable log.Logger inside).
+// TODO: Logging should be configurable (Server has a modifiable log.Logger inside). When this works, ensure
+// the test doesn't print logs.
 
 type Server struct {
 	addr string
