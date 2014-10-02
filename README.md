@@ -25,6 +25,7 @@ General implementation notes:
   - Memprofile
   - Think of ways to reuse []bytes in the memcache map
 
-- Loading
+- Slow initial loading when DB is large
+  - Log total time to load
   - Profile + optimize
   - Parallelize

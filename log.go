@@ -87,13 +87,19 @@ type WriteLog struct {
 	idxw       *crcWriteCloser
 	maxSize    uint64
 	lastOffset uint64
+	scratch    []byte
 }
 
 func NewWriteLog(idxWriter, logWriter io.WriteCloser, maxSize uint64) (*WriteLog, error) {
+	// The size is an upper bound for everything before the value.
+	// It is also large enough to encode the entire index record.
+	scratch := make([]byte, 8+8+maxKeyLen+8)
+
 	wl := &WriteLog{
 		logw:    &sizeWriteCloser{logWriter, 0},
 		idxw:    &crcWriteCloser{idxWriter, crc32.NewIEEE()},
 		maxSize: maxSize,
+		scratch: scratch,
 	}
 	header := make([]byte, 8)
 	binary.BigEndian.PutUint32(header[4:], 1)
@@ -131,15 +137,10 @@ func (wl *WriteLog) WriteRecord(rec *Record) (offset uint64, err error) {
 		return 0, ErrWriteLogFull
 	}
 
-	// The size is an upper bound for everything before the value.
-	// It is also large enough to encode the entire index record.
-	scratch := make([]byte, 8+8+len(rec.key)+8)
-
 	// Write to the log
-	logScratch := scratch
-	binary.BigEndian.PutUint64(logScratch, uint64(rec.t.UnixNano()))
-	nk := binary.PutUvarint(logScratch[8:], uint64(len(rec.key)))
-	copy(logScratch[8+nk:], rec.key)
+	binary.BigEndian.PutUint64(wl.scratch, uint64(rec.t.UnixNano()))
+	nk := binary.PutUvarint(wl.scratch[8:], uint64(len(rec.key)))
+	copy(wl.scratch[8+nk:], rec.key)
 
 	encodedVal, err := snappy.Encode(nil, rec.val)
 	if err != nil {
@@ -148,9 +149,8 @@ func (wl *WriteLog) WriteRecord(rec *Record) (offset uint64, err error) {
 		panic("cannot happen")
 	}
 
-	nv := binary.PutUvarint(logScratch[8+nk+len(rec.key):], uint64(len(encodedVal)))
-	logScratch = logScratch[:8+nk+len(rec.key)+nv]
-	if _, err := wl.logw.Write(logScratch); err != nil {
+	nv := binary.PutUvarint(wl.scratch[8+nk+len(rec.key):], uint64(len(encodedVal)))
+	if _, err := wl.logw.Write(wl.scratch[:8+nk+len(rec.key)+nv]); err != nil {
 		return 0, err
 	}
 	if _, err := wl.logw.Write(encodedVal); err != nil {
@@ -158,18 +158,16 @@ func (wl *WriteLog) WriteRecord(rec *Record) (offset uint64, err error) {
 	}
 
 	// Write to the index
-	idxScratch := scratch
-	nk = binary.PutVarint(idxScratch, int64(len(rec.key)))
-	copy(idxScratch[nk:], rec.key)
+	nk = binary.PutVarint(wl.scratch, int64(len(rec.key)))
+	copy(wl.scratch[nk:], rec.key)
 
 	if offset <= wl.lastOffset {
 		panic("offset is smaller than lastOffset")
 	}
 	off := offset - wl.lastOffset
 	wl.lastOffset = offset
-	no := binary.PutUvarint(idxScratch[nk+len(rec.key):], off)
-	idxScratch = idxScratch[:nk+len(rec.key)+no]
-	if _, err := wl.idxw.Write(idxScratch); err != nil {
+	no := binary.PutUvarint(wl.scratch[nk+len(rec.key):], off)
+	if _, err := wl.idxw.Write(wl.scratch[:nk+len(rec.key)+no]); err != nil {
 		return 0, err
 	}
 
