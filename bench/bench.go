@@ -30,13 +30,21 @@ func randStr(n int) string {
 	return string(r)
 }
 
+var randomValues [][]byte
+
+func init() {
+	for i := 0; i < 1000; i++ {
+		randomValues = append(randomValues, []byte(randStr(1000)))
+	}
+}
+
 func makeRequests(pool *redis.Pool, n int) {
 	conn := pool.Get()
 	defer conn.Close()
 
 	for i := 0; i < n; i++ {
 		key := randStr(10)
-		val := make([]byte, 1000)
+		val := randomValues[i%len(randomValues)]
 		_, err := conn.Do("SET", key, val)
 		if err != nil {
 			log.Fatal(err)
