@@ -4,9 +4,9 @@ import (
 	"fmt"
 	"log"
 	"math/rand"
-	"sync"
 	"time"
 
+	"github.com/bmizerany/perks/quantile"
 	"github.com/garyburd/redigo/redis"
 )
 
@@ -34,18 +34,20 @@ var randomValues [][]byte
 
 func init() {
 	for i := 0; i < 1000; i++ {
-		randomValues = append(randomValues, []byte(randStr(1000)))
+		randomValues = append(randomValues, []byte(randStr(rand.Intn(1000)+500)))
 	}
 }
 
-func makeRequests(pool *redis.Pool, n int) {
+func makeRequests(pool *redis.Pool, delay time.Duration, stats chan<- float64) {
 	conn := pool.Get()
 	defer conn.Close()
 
-	for i := 0; i < n; i++ {
+	for i := 0; ; i = (i + 1) % len(randomValues) {
 		key := randStr(10)
-		val := randomValues[i%len(randomValues)]
+		val := randomValues[i]
+		start := time.Now()
 		_, err := conn.Do("SET", key, val)
+		stats <- time.Since(start).Seconds() * 1000
 		if err != nil {
 			log.Fatal(err)
 		}
@@ -56,6 +58,7 @@ func makeRequests(pool *redis.Pool, n int) {
 		//if result != val {
 		//log.Fatal("result mismatch")
 		//}
+		time.Sleep(delay)
 	}
 }
 
@@ -66,22 +69,60 @@ func main() {
 		IdleTimeout: time.Second,
 		Dial:        func() (redis.Conn, error) { return redis.Dial("tcp", "localhost:5533") },
 	}
-	const N = 100000
+
 	const P = 4
-	if N%P != 0 {
-		log.Fatal("N must be divisible by P")
-	}
-	var wg sync.WaitGroup
-	wg.Add(P)
-	start := time.Now()
+	const targetQPS = 3000
+	delay := time.Second / time.Duration(float64(targetQPS)/float64(P))
+
+	stats := make(chan float64)
 	for i := 0; i < P; i++ {
 		go func() {
-			makeRequests(pool, N/P)
-			wg.Done()
+			makeRequests(pool, delay, stats)
 		}()
 	}
-	wg.Wait()
-	elapsed := time.Since(start)
-	fmt.Printf("Took %s for %d iterations | %s / op | %.1f ops / s\n", elapsed, N, elapsed/N,
-		N*float64(time.Second)/float64(elapsed))
+	collectStats(stats)
+}
+
+func collectStats(c <-chan float64) {
+	tick := time.Tick(1 * time.Second)
+	stats := NewStats()
+	for {
+		select {
+		case <-tick:
+			fmt.Println(stats)
+			stats = NewStats()
+		case f := <-c:
+			stats.Add(f)
+		}
+	}
+}
+
+type Stats struct {
+	start     time.Time
+	max       float64
+	total     float64
+	samples   float64
+	quantiles *quantile.Stream
+}
+
+func NewStats() *Stats {
+	return &Stats{
+		start:     time.Now(),
+		quantiles: quantile.NewTargeted(0.5, 0.95, 0.99),
+	}
+}
+
+func (s *Stats) Add(f float64) {
+	if f > s.max {
+		s.max = f
+	}
+	s.total += f
+	s.samples++
+	s.quantiles.Insert(f)
+}
+
+func (s *Stats) String() string {
+	return fmt.Sprintf("%.0f samples; %.1f qps; max = %.2fms; mean = %.2fms; median = %.2fms; 0.95pct = %.2fms; 0.99pct = %.2fms",
+		s.samples, s.samples/time.Since(s.start).Seconds(), s.max, s.total/s.samples,
+		s.quantiles.Query(0.5), s.quantiles.Query(0.95), s.quantiles.Query(0.99))
 }
