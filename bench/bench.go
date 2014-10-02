@@ -84,7 +84,7 @@ func main() {
 }
 
 func collectStats(c <-chan float64) {
-	tick := time.Tick(1 * time.Second)
+	tick := time.Tick(30 * time.Second)
 	stats := NewStats()
 	for {
 		select {
