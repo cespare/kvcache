@@ -17,7 +17,14 @@ General implementation notes:
 - Recent key/value pairs are duplicated in another in-memory hashtable (with the complete value) for fast
   lookup
 
-## TODO
+## Speedup
 
-- benchmark again, including with ~30GB of data, on a longer-running server
-- run on demo server
+- Periodic pauses (GC?)
+  - Don't allocate when writing logs
+  - CPU profile to confirm GC hypothesis
+  - Memprofile
+  - Think of ways to reuse []bytes in the memcache map
+
+- Loading
+  - Profile + optimize
+  - Parallelize
