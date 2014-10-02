@@ -108,7 +108,7 @@ type Stats struct {
 func NewStats() *Stats {
 	return &Stats{
 		start:     time.Now(),
-		quantiles: quantile.NewTargeted(0.5, 0.99, 0.999),
+		quantiles: quantile.NewTargeted(0.5, 0.9, 0.99, 0.999),
 	}
 }
 
@@ -122,7 +122,7 @@ func (s *Stats) Add(f float64) {
 }
 
 func (s *Stats) String() string {
-	return fmt.Sprintf("%.0f samples; %.1f qps; max = %.2fms; mean = %.2fms; median = %.2fms; 0.99pct = %.2fms; 0.999pct = %.2fms",
+	return fmt.Sprintf("%.0f samples; %.1f qps; max = %.2fms; mean = %.2fms; median = %.2fms; 0.90pct = %.2fms; 0.99pct = %.2fms; 0.999pct = %.2fms",
 		s.samples, s.samples/time.Since(s.start).Seconds(), s.max, s.total/s.samples,
-		s.quantiles.Query(0.5), s.quantiles.Query(0.99), s.quantiles.Query(0.999))
+		s.quantiles.Query(0.5), s.quantiles.Query(0.9), s.quantiles.Query(0.99), s.quantiles.Query(0.999))
 }
