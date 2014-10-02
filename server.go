@@ -7,8 +7,11 @@ import (
 	"io"
 	"log"
 	"net"
+	"os"
+	"os/signal"
 	"strconv"
 	"strings"
+	"syscall"
 	"time"
 )
 
@@ -56,6 +59,10 @@ const (
 type Response struct {
 	Type RedisType
 	Msg  []byte
+}
+
+func (s *Server) Stop() error {
+	return s.db.Close()
 }
 
 func (s *Server) Start() error {
@@ -286,5 +293,18 @@ func main() {
 	if err != nil {
 		log.Fatal(err)
 	}
-	log.Fatal(server.Start())
+
+	c := make(chan os.Signal, 1)
+	signal.Notify(c, syscall.SIGINT, syscall.SIGTERM)
+	go func() {
+		log.Printf("Caught signal (%v); shutting down...", <-c)
+		if err := server.Stop(); err != nil {
+			log.Fatal(err)
+		}
+		os.Exit(0)
+	}()
+
+	if err := server.Start(); err != nil {
+		log.Fatal(err)
+	}
 }
