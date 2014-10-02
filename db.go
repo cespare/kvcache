@@ -99,6 +99,7 @@ func OpenDB(chunkSize uint64, expiry time.Duration, dir string) (*DB, error) {
 	if err := db.addFlock(); err != nil {
 		return nil, err
 	}
+	start := time.Now()
 	seqs, err := findDBFiles(dir)
 	if err != nil {
 		return nil, err
@@ -125,6 +126,9 @@ func OpenDB(chunkSize uint64, expiry time.Duration, dir string) (*DB, error) {
 		db.rchunks = append(db.rchunks, rchunk)
 		log.Printf("Loaded chunk %d", seq)
 	}
+
+	log.Printf("Finished loading DB; loaded %d chunks in %.3fs",
+		len(seqs), time.Since(start).Seconds())
 
 	wchunk, err := NewWriteChunk(db.logName(db.seq), db.chunkSize)
 	if err != nil {

@@ -20,12 +20,10 @@ General implementation notes:
 ## Speedup
 
 - Periodic pauses (GC?)
-  - Don't allocate when writing logs
   - CPU profile to confirm GC hypothesis
   - Memprofile
   - Think of ways to reuse []bytes in the memcache map
 
 - Slow initial loading when DB is large
-  - Log total time to load
   - Profile + optimize
   - Parallelize
