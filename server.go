@@ -20,8 +20,8 @@ type Server struct {
 	db   *DB
 }
 
-func NewServer(dir, addr string) (*Server, error) {
-	db, err := OpenDB(100e3, time.Hour, dir)
+func NewServer(dir, addr string, chunkSize uint64, expiry time.Duration) (*Server, error) {
+	db, err := OpenDB(chunkSize, expiry, dir)
 	if err != nil {
 		return nil, err
 	}
@@ -135,6 +135,13 @@ reqLoop:
 				switch r.Type {
 				case RequestSet:
 					if _, err := s.db.Put(r.Key, r.Val); err != nil {
+						if e, ok := err.(FatalDBError); ok {
+							log.Println("Fatal DB error:", e)
+							if err := s.Stop(); err != nil {
+								log.Println("Error while shutting down:", err)
+							}
+							os.Exit(1)
+						}
 						resp = ResponseFromError(err)
 						break
 					}
@@ -284,12 +291,16 @@ func (r *Response) Write(w io.Writer) error {
 }
 
 func main() {
-	addr := flag.String("addr", "localhost:5533", "Listen addr")
-	dir := flag.String("dir", "db", "DB directory")
+	var (
+		addr      = flag.String("addr", "localhost:5533", "Listen addr")
+		dir       = flag.String("dir", "db", "DB directory")
+		chunkSize = flag.Uint64("chunksize", 100e6, "Max size for chunks")
+		expiry    = flag.Duration("expiry", time.Hour, "How long data persists before expiring")
+	)
 	flag.Parse()
 
 	log.Println("Now listening on", *addr)
-	server, err := NewServer(*dir, *addr)
+	server, err := NewServer(*dir, *addr, *chunkSize, *expiry)
 	if err != nil {
 		log.Fatal(err)
 	}

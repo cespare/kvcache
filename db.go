@@ -169,6 +169,12 @@ func (db *DB) Get(k []byte) (v []byte, cached bool, err error) {
 	return nil, false, ErrKeyNotExist
 }
 
+type FatalDBError struct {
+	error
+}
+
+func (e FatalDBError) Error() string { return e.error.Error() }
+
 func (db *DB) Put(k, v []byte) (rotated bool, err error) {
 	db.mu.Lock()
 	defer db.mu.Unlock()
@@ -194,7 +200,10 @@ func (db *DB) Put(k, v []byte) (rotated bool, err error) {
 	switch err {
 	case ErrWriteLogFull:
 		if err = db.Rotate(); err != nil {
-			return rotated, err
+			if err2 := db.close(); err2 != nil {
+				log.Println("Error while closing DB:", err2)
+			}
+			return rotated, FatalDBError{err}
 		}
 		rotated = true
 		offset, err = db.wchunk.WriteRecord(r)
@@ -213,7 +222,13 @@ func (db *DB) Put(k, v []byte) (rotated bool, err error) {
 func (db *DB) Close() error {
 	db.mu.Lock()
 	defer db.mu.Unlock()
+	return db.close()
+}
 
+func (db *DB) close() error {
+	if db.closed {
+		return nil
+	}
 	db.closed = true
 	if err := db.wchunk.Close(); err != nil {
 		return err
@@ -237,17 +252,20 @@ func (db *DB) Rotate() error {
 			offset: entry.offset,
 		}
 	}
+	// Open the new chunk -- do this early, because this is where errors typically occur
+	db.seq++
+	wchunk, err := NewWriteChunk(db.logName(db.seq), db.chunkSize)
+	if err != nil {
+		return err
+	}
+
 	// Rotate the chunk
 	rchunk, err := db.wchunk.ReopenAsReadChunk()
 	if err != nil {
 		return err
 	}
 	db.rchunks = append([]*ReadChunk{rchunk}, db.rchunks...)
-	db.seq++
-	db.wchunk, err = NewWriteChunk(db.logName(db.seq), db.chunkSize)
-	if err != nil {
-		return err
-	}
+	db.wchunk = wchunk
 
 	if err := db.removeExpiredChunks(); err != nil {
 		return err
