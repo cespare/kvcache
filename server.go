@@ -4,6 +4,7 @@ import (
 	"bufio"
 	"errors"
 	"flag"
+	"fmt"
 	"io"
 	"log"
 	"net"
@@ -13,6 +14,8 @@ import (
 	"strings"
 	"syscall"
 	"time"
+
+	"github.com/cespare/memstats"
 )
 
 type Server struct {
@@ -304,6 +307,19 @@ func main() {
 	if err != nil {
 		log.Fatal(err)
 	}
+
+	go func() {
+		var diff memstats.Diff
+		stats := new(memstats.Stats)
+		stats.Collect()
+		for _ = range time.Tick(time.Minute) {
+			stats.Collect()
+			if stats.ReadDiff(&diff) {
+				fmt.Println("------------- MEMSTATS -----------")
+				fmt.Println(&diff)
+			}
+		}
+	}()
 
 	c := make(chan os.Signal, 1)
 	signal.Notify(c, syscall.SIGINT, syscall.SIGTERM)
