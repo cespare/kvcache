@@ -9,7 +9,6 @@ import (
 	"hash/crc32"
 	"io"
 	"os"
-	"time"
 
 	"code.google.com/p/snappy-go/snappy"
 )
@@ -138,7 +137,7 @@ func (wl *WriteLog) WriteRecord(rec *Record) (offset uint64, err error) {
 	}
 
 	// Write to the log
-	binary.BigEndian.PutUint64(wl.scratch, uint64(rec.t.UnixNano()))
+	binary.BigEndian.PutUint64(wl.scratch, uint64(rec.t))
 	nk := binary.PutUvarint(wl.scratch[8:], uint64(len(rec.key)))
 	copy(wl.scratch[8+nk:], rec.key)
 
@@ -323,7 +322,7 @@ var (
 
 func (rl *ReadLog) ReadRecord(offset uint64) (*Record, error) {
 	b := rl.b[offset:]
-	t := time.Unix(0, int64(binary.BigEndian.Uint64(b[:8]))).UTC()
+	t := int64(binary.BigEndian.Uint64(b[:8]))
 
 	nk, n := binary.Uvarint(b[8:])
 	if n <= 0 || nk > maxKeyLen {

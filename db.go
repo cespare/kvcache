@@ -14,7 +14,9 @@ import (
 )
 
 type Record struct {
-	t   time.Time
+	// NOTE: Not storing a time.Time here because it contains a pointer
+	// and introduces a lot of GC pressure when we're holding onto billions of them.
+	t   int64 // Unix nanoseconds
 	key []byte
 	val []byte
 }
@@ -41,8 +43,8 @@ type DB struct {
 	wchunk  *WriteChunk
 	rchunks []*ReadChunk
 
-	memCache map[string]*Record // entries in wchunk are cached directly
-	refCache map[string]*RecordRef
+	memCache map[string]Record // entries in wchunk are cached directly
+	refCache map[string]RecordRef
 
 	closed  bool
 	dirFile *os.File // Handle for flocking the DB
@@ -58,8 +60,8 @@ func newDB(chunkSize uint64, expiry time.Duration, dir string) *DB {
 		since: time.Since,
 
 		mu:       new(sync.Mutex),
-		memCache: make(map[string]*Record),
-		refCache: make(map[string]*RecordRef),
+		memCache: make(map[string]Record),
+		refCache: make(map[string]RecordRef),
 	}
 }
 
@@ -118,7 +120,7 @@ func OpenDB(chunkSize uint64, expiry time.Duration, dir string) (*DB, error) {
 			return nil, err
 		}
 		for _, entry := range index {
-			db.refCache[string(entry.key)] = &RecordRef{
+			db.refCache[string(entry.key)] = RecordRef{
 				seq:    seq,
 				offset: entry.offset,
 			}
@@ -154,7 +156,7 @@ func (db *DB) Get(k []byte) (v []byte, cached bool, err error) {
 
 	s := string(k)
 	if r, ok := db.memCache[s]; ok {
-		if db.since(r.t) > db.expiry {
+		if db.since(time.Unix(0, r.t)) > db.expiry {
 			return nil, false, ErrKeyNotExist
 		}
 		return r.val, true, nil
@@ -165,7 +167,7 @@ func (db *DB) Get(k []byte) (v []byte, cached bool, err error) {
 		if err != nil {
 			return nil, false, err
 		}
-		if db.since(r.t) > db.expiry {
+		if db.since(time.Unix(0, r.t)) > db.expiry {
 			return nil, false, ErrKeyNotExist
 		}
 		return r.val, false, nil
@@ -195,12 +197,12 @@ func (db *DB) Put(k, v []byte) (rotated bool, err error) {
 		return rotated, ErrKeyExist
 	}
 
-	r := &Record{
-		t:   db.now(),
+	r := Record{
+		t:   db.now().UnixNano(),
 		key: k,
 		val: v,
 	}
-	offset, err := db.wchunk.WriteRecord(r)
+	offset, err := db.wchunk.WriteRecord(&r)
 	switch err {
 	case ErrWriteLogFull:
 		if err = db.Rotate(); err != nil {
@@ -210,7 +212,7 @@ func (db *DB) Put(k, v []byte) (rotated bool, err error) {
 			return rotated, FatalDBError{err}
 		}
 		rotated = true
-		offset, err = db.wchunk.WriteRecord(r)
+		offset, err = db.wchunk.WriteRecord(&r)
 		if err != nil {
 			return rotated, err
 		}
@@ -219,7 +221,7 @@ func (db *DB) Put(k, v []byte) (rotated bool, err error) {
 		return rotated, err
 	}
 	db.memCache[s] = r
-	db.refCache[s] = &RecordRef{seq: db.seq, offset: offset}
+	db.refCache[s] = RecordRef{seq: db.seq, offset: offset}
 	return rotated, nil
 }
 
@@ -251,7 +253,7 @@ func (db *DB) Rotate() error {
 	log.Printf("sequence %d; rotating...", db.seq)
 	// Add references to refCache.
 	for _, entry := range db.wchunk.index {
-		db.refCache[entry.key] = &RecordRef{
+		db.refCache[entry.key] = RecordRef{
 			seq:    db.seq,
 			offset: entry.offset,
 		}
@@ -276,7 +278,7 @@ func (db *DB) Rotate() error {
 	}
 
 	// Clear the memCache. Size estimate based on previous cache.
-	db.memCache = make(map[string]*Record, len(db.memCache))
+	db.memCache = make(map[string]Record, len(db.memCache))
 
 	return nil
 }
@@ -285,7 +287,7 @@ func (db *DB) removeExpiredChunks() error {
 	for i := len(db.rchunks) - 1; i >= 0; i-- {
 		rchunk := db.rchunks[i]
 		// Check whether this whole chunk is expired by looking at the most recent timestamp.
-		if db.since(rchunk.lastTimestamp) <= db.expiry {
+		if db.since(time.Unix(0, rchunk.lastTimestamp)) <= db.expiry {
 			break
 		}
 		// Remove the log file.

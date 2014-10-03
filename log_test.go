@@ -16,27 +16,27 @@ const (
 
 var testRecords = []*Record{
 	{
-		t:   ts("2014-09-21T00:00:00Z"),
+		t:   ts("2014-09-21T00:00:00Z").UnixNano(),
 		key: []byte("key1"),
 		val: []byte(testVal),
 	},
 	{
-		t:   ts("2014-09-21T00:00:01Z"),
+		t:   ts("2014-09-21T00:00:01Z").UnixNano(),
 		key: []byte("key2"),
 		val: []byte(testVal),
 	},
 	{
-		t:   ts("2014-09-21T00:00:02Z"),
+		t:   ts("2014-09-21T00:00:02Z").UnixNano(),
 		key: []byte("key3"),
 		val: []byte(testVal),
 	},
 	{
-		t:   ts("2014-09-21T00:00:03Z"),
+		t:   ts("2014-09-21T00:00:03Z").UnixNano(),
 		key: []byte("key4"),
 		val: []byte(testVal),
 	},
 	{
-		t:   ts("2014-09-21T00:00:04Z"),
+		t:   ts("2014-09-21T00:00:04Z").UnixNano(),
 		key: []byte("key5"),
 		val: []byte(testVal),
 	},
@@ -117,13 +117,13 @@ func TestReadLog(t *testing.T) {
 
 	rec, err := rl.ReadRecord(headerLen)
 	asrt.Equal(t, err, nil)
-	asrt.Equal(t, rec.t, ts("2014-09-21T00:00:00Z"))
+	asrt.Equal(t, rec.t, ts("2014-09-21T00:00:00Z").UnixNano())
 	asrt.Equal(t, string(rec.key), "key1")
 	asrt.Equal(t, string(rec.val), testVal)
 
 	rec, err = rl.ReadRecord(uint64(headerLen + recordLen))
 	asrt.Equal(t, err, nil)
-	asrt.Equal(t, rec.t, ts("2014-09-21T00:00:01Z"))
+	asrt.Equal(t, rec.t, ts("2014-09-21T00:00:01Z").UnixNano())
 	asrt.Equal(t, string(rec.key), "key2")
 	asrt.Equal(t, string(rec.val), testVal)
 }
