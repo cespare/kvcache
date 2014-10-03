@@ -20,10 +20,18 @@ General implementation notes:
 ## Speedup
 
 - Periodic pauses (GC?)
-  - CPU profile to confirm GC hypothesis
-  - Memprofile
-  - Think of ways to reuse []bytes in the memcache map
+  - Show the size of memCache and refCache on INFO calls
+  - Change the refCache to be a map[[20]byte]RecordRef so it has no pointers:
+    - key is a SHA-1 hash
+    - See about changing one/both of the RecordRef fields from uint64s to uint32
+      - Should be fine to change offset to uint32 -- we control max chunk size
+      - Seq #s could be 4 bytes as well...just need to ensure that chunks aren't too small (panic on rollover)
 
 - Slow initial loading when DB is large
   - Profile + optimize
   - Parallelize
+
+- General
+  - Optimistically serialize values before grabbing mutex (most writes will not be collisions)
+  - SHA-1 before grabbing mutex
+  - See the space/latency difference of switching back to FLATE using some real test data
