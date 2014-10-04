@@ -2,6 +2,7 @@ package main
 
 import (
 	"bytes"
+	"crypto/sha1"
 	"errors"
 	"fmt"
 	"io/ioutil"
@@ -25,6 +26,8 @@ type RecordRef struct {
 	offset uint64
 }
 
+type keyHash [20]byte // The SHA-1 hash of a key
+
 type DB struct {
 	// Immutable configuration (once the DB is constructed)
 	chunkSize uint64        // On-disk size limit for a chunk
@@ -42,8 +45,8 @@ type DB struct {
 	wchunk  *WriteChunk
 	rchunks []*ReadChunk
 
-	memCache map[string]*Record // entries in wchunk are cached directly
-	refCache map[string]*RecordRef
+	memCache map[keyHash]*Record // entries in wchunk are cached directly
+	refCache map[keyHash]RecordRef
 
 	closed  bool
 	dirFile *os.File // Handle for flocking the DB
@@ -59,8 +62,8 @@ func newDB(chunkSize uint64, expiry time.Duration, dir string) *DB {
 		since: time.Since,
 
 		mu:       new(sync.Mutex),
-		memCache: make(map[string]*Record),
-		refCache: make(map[string]*RecordRef),
+		memCache: make(map[keyHash]*Record),
+		refCache: make(map[keyHash]RecordRef),
 	}
 }
 
@@ -119,7 +122,7 @@ func OpenDB(chunkSize uint64, expiry time.Duration, dir string) (*DB, error) {
 			return nil, err
 		}
 		for _, entry := range index {
-			db.refCache[string(entry.key)] = &RecordRef{
+			db.refCache[entry.hash] = RecordRef{
 				seq:    seq,
 				offset: entry.offset,
 			}
@@ -139,41 +142,6 @@ func OpenDB(chunkSize uint64, expiry time.Duration, dir string) (*DB, error) {
 	return db, nil
 }
 
-var (
-	ErrKeyNotExist = errors.New("key does not exist in the database")
-	ErrKeyExist    = errors.New("key already exists in the database")
-	ErrDBClosed    = errors.New("database is closed")
-)
-
-func (db *DB) Get(k []byte) (v []byte, cached bool, err error) {
-	db.mu.Lock()
-	defer db.mu.Unlock()
-
-	if db.closed {
-		return nil, false, ErrDBClosed
-	}
-
-	s := string(k)
-	if r, ok := db.memCache[s]; ok {
-		if db.since(r.t) > db.expiry {
-			return nil, false, ErrKeyNotExist
-		}
-		return r.val, true, nil
-	}
-	if ref, ok := db.refCache[s]; ok {
-		rchunk := db.rchunkForSeq(ref.seq)
-		r, err := rchunk.ReadRecord(ref.offset)
-		if err != nil {
-			return nil, false, err
-		}
-		if db.since(r.t) > db.expiry {
-			return nil, false, ErrKeyNotExist
-		}
-		return r.val, false, nil
-	}
-	return nil, false, ErrKeyNotExist
-}
-
 func (db *DB) Info() []byte {
 	db.mu.Lock()
 	defer db.mu.Unlock()
@@ -191,6 +159,41 @@ func (db *DB) Info() []byte {
 	return buf.Bytes()
 }
 
+var (
+	ErrKeyNotExist = errors.New("key does not exist in the database")
+	ErrKeyExist    = errors.New("key already exists in the database")
+	ErrDBClosed    = errors.New("database is closed")
+)
+
+func (db *DB) Get(k []byte) (v []byte, cached bool, err error) {
+	hash := sha1.Sum(k)
+
+	db.mu.Lock()
+	defer db.mu.Unlock()
+	if db.closed {
+		return nil, false, ErrDBClosed
+	}
+
+	if r, ok := db.memCache[hash]; ok {
+		if db.since(r.t) > db.expiry {
+			return nil, false, ErrKeyNotExist
+		}
+		return r.val, true, nil
+	}
+	if ref, ok := db.refCache[hash]; ok {
+		rchunk := db.rchunkForSeq(ref.seq)
+		r, err := rchunk.ReadRecord(ref.offset)
+		if err != nil {
+			return nil, false, err
+		}
+		if db.since(r.t) > db.expiry {
+			return nil, false, ErrKeyNotExist
+		}
+		return r.val, false, nil
+	}
+	return nil, false, ErrKeyNotExist
+}
+
 type FatalDBError struct {
 	error
 }
@@ -198,18 +201,18 @@ type FatalDBError struct {
 func (e FatalDBError) Error() string { return e.error.Error() }
 
 func (db *DB) Put(k, v []byte) (rotated bool, err error) {
+	hash := sha1.Sum(k)
+
 	db.mu.Lock()
 	defer db.mu.Unlock()
 	if db.closed {
 		return false, ErrDBClosed
 	}
 
-	s := string(k)
-
-	if _, ok := db.memCache[s]; ok {
+	if _, ok := db.memCache[hash]; ok {
 		return rotated, ErrKeyExist
 	}
-	if _, ok := db.refCache[s]; ok {
+	if _, ok := db.refCache[hash]; ok {
 		return rotated, ErrKeyExist
 	}
 
@@ -218,7 +221,7 @@ func (db *DB) Put(k, v []byte) (rotated bool, err error) {
 		key: k,
 		val: v,
 	}
-	offset, err := db.wchunk.WriteRecord(r)
+	offset, err := db.wchunk.WriteRecord(hash, r)
 	switch err {
 	case ErrWriteLogFull:
 		if err = db.Rotate(); err != nil {
@@ -228,7 +231,7 @@ func (db *DB) Put(k, v []byte) (rotated bool, err error) {
 			return rotated, FatalDBError{err}
 		}
 		rotated = true
-		offset, err = db.wchunk.WriteRecord(r)
+		offset, err = db.wchunk.WriteRecord(hash, r)
 		if err != nil {
 			return rotated, err
 		}
@@ -236,8 +239,8 @@ func (db *DB) Put(k, v []byte) (rotated bool, err error) {
 	default:
 		return rotated, err
 	}
-	db.memCache[s] = r
-	db.refCache[s] = &RecordRef{seq: db.seq, offset: offset}
+	db.memCache[hash] = r
+	db.refCache[hash] = RecordRef{seq: db.seq, offset: offset}
 	return rotated, nil
 }
 
@@ -269,7 +272,7 @@ func (db *DB) Rotate() error {
 	log.Printf("sequence %d; rotating...", db.seq)
 	// Add references to refCache.
 	for _, entry := range db.wchunk.index {
-		db.refCache[entry.key] = &RecordRef{
+		db.refCache[entry.hash] = RecordRef{
 			seq:    db.seq,
 			offset: entry.offset,
 		}
@@ -294,7 +297,7 @@ func (db *DB) Rotate() error {
 	}
 
 	// Clear the memCache. Size estimate based on previous cache.
-	db.memCache = make(map[string]*Record, len(db.memCache))
+	db.memCache = make(map[keyHash]*Record, len(db.memCache))
 
 	return nil
 }
@@ -318,7 +321,7 @@ func (db *DB) removeExpiredChunks() error {
 		db.rchunks = db.rchunks[:i]
 		// Remove the refCache entries
 		for _, entry := range rchunk.index {
-			delete(db.refCache, entry.key)
+			delete(db.refCache, entry.hash)
 		}
 	}
 	return nil

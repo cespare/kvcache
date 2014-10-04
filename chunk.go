@@ -9,7 +9,7 @@ import (
 )
 
 type IndexEntry struct {
-	key    string // string version of the record's key
+	hash   keyHash
 	offset uint64
 }
 
@@ -46,12 +46,12 @@ func NewWriteChunk(basename string, maxSize uint64) (*WriteChunk, error) {
 	}, nil
 }
 
-func (wc *WriteChunk) WriteRecord(r *Record) (offset uint64, err error) {
+func (wc *WriteChunk) WriteRecord(hash keyHash, r *Record) (offset uint64, err error) {
 	offset, err = wc.WriteLog.WriteRecord(r)
 	if err != nil {
 		return
 	}
-	wc.index = append(wc.index, IndexEntry{key: string(r.key), offset: offset})
+	wc.index = append(wc.index, IndexEntry{hash, offset})
 	if r.t.After(wc.lastTimestamp) {
 		wc.lastTimestamp = r.t
 	}

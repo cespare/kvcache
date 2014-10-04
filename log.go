@@ -3,6 +3,7 @@ package main
 import (
 	"bufio"
 	"bytes"
+	"crypto/sha1"
 	"encoding/binary"
 	"errors"
 	"hash"
@@ -247,7 +248,7 @@ func ParseIndex(r io.Reader) (index []IndexEntry, logSize uint64, err error) {
 		crc.Write(byteRdr.Bytes())
 
 		index = append(index, IndexEntry{
-			key:    string(key),
+			hash:   sha1.Sum(key),
 			offset: offset,
 		})
 	}
