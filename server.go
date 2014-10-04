@@ -164,7 +164,7 @@ reqLoop:
 				case RequestPing:
 					resp.Msg = []byte("PONG")
 				case RequestInfo:
-					resp.Msg = []byte("useful info")
+					resp.Msg = s.db.Info()
 				default:
 					panic("unexpected request type")
 				}

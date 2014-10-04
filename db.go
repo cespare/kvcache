@@ -1,6 +1,7 @@
 package main
 
 import (
+	"bytes"
 	"errors"
 	"fmt"
 	"io/ioutil"
@@ -171,6 +172,23 @@ func (db *DB) Get(k []byte) (v []byte, cached bool, err error) {
 		return r.val, false, nil
 	}
 	return nil, false, ErrKeyNotExist
+}
+
+func (db *DB) Info() []byte {
+	db.mu.Lock()
+	defer db.mu.Unlock()
+
+	var buf bytes.Buffer
+	var totalSize uint64
+	for _, rchunk := range db.rchunks {
+		totalSize += uint64(len(rchunk.b))
+	}
+	fmt.Fprintf(&buf, "Read chunks: %d\n", len(db.rchunks))
+	fmt.Fprintf(&buf, "Total read log size: %d\n", totalSize)
+	fmt.Fprintf(&buf, "Keys in write log: %d\n", len(db.memCache))
+	fmt.Fprintf(&buf, "Keys in read log: %d\n", len(db.refCache))
+	fmt.Fprintf(&buf, "Total keys: %d\n", len(db.memCache)+len(db.refCache))
+	return buf.Bytes()
 }
 
 type FatalDBError struct {
