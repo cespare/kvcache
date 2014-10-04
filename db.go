@@ -17,7 +17,8 @@ import (
 )
 
 type Record struct {
-	t   time.Time
+	// NOTE: using a time in unix nanoseconds to avoid using a larger time.Time that contains a pointer.
+	t   int64
 	key []byte
 	val []byte
 }
@@ -46,7 +47,7 @@ type DB struct {
 	wchunk  *WriteChunk
 	rchunks []*ReadChunk
 
-	memCache map[keyHash]*Record // entries in wchunk are cached directly
+	memCache map[keyHash]Record // entries in wchunk are cached directly
 	refCache map[keyHash]RecordRef
 
 	closed  bool
@@ -66,7 +67,7 @@ func newDB(chunkSize uint64, expiry time.Duration, dir string) (*DB, error) {
 		since: time.Since,
 
 		mu:       new(sync.Mutex),
-		memCache: make(map[keyHash]*Record),
+		memCache: make(map[keyHash]Record),
 		refCache: make(map[keyHash]RecordRef),
 	}, nil
 }
@@ -185,7 +186,7 @@ func (db *DB) Get(k []byte) (v []byte, cached bool, err error) {
 	}
 
 	if r, ok := db.memCache[hash]; ok {
-		if db.since(r.t) > db.expiry {
+		if db.since(time.Unix(0, r.t)) > db.expiry {
 			return nil, false, ErrKeyNotExist
 		}
 		return r.val, true, nil
@@ -196,7 +197,7 @@ func (db *DB) Get(k []byte) (v []byte, cached bool, err error) {
 		if err != nil {
 			return nil, false, err
 		}
-		if db.since(r.t) > db.expiry {
+		if db.since(time.Unix(0, r.t)) > db.expiry {
 			return nil, false, ErrKeyNotExist
 		}
 		return r.val, false, nil
@@ -226,12 +227,12 @@ func (db *DB) Put(k, v []byte) (rotated bool, err error) {
 		return rotated, ErrKeyExist
 	}
 
-	r := &Record{
-		t:   db.now(),
+	r := Record{
+		t:   db.now().UnixNano(),
 		key: k,
 		val: v,
 	}
-	offset, err := db.wchunk.WriteRecord(hash, r)
+	offset, err := db.wchunk.WriteRecord(hash, &r)
 	switch err {
 	case ErrWriteLogFull:
 		if err = db.Rotate(); err != nil {
@@ -241,7 +242,7 @@ func (db *DB) Put(k, v []byte) (rotated bool, err error) {
 			return rotated, FatalDBError{err}
 		}
 		rotated = true
-		offset, err = db.wchunk.WriteRecord(hash, r)
+		offset, err = db.wchunk.WriteRecord(hash, &r)
 		if err != nil {
 			return rotated, err
 		}
@@ -310,7 +311,7 @@ func (db *DB) Rotate() error {
 	}
 
 	// Clear the memCache. Size estimate based on previous cache.
-	db.memCache = make(map[keyHash]*Record, len(db.memCache))
+	db.memCache = make(map[keyHash]Record, len(db.memCache))
 
 	return nil
 }
@@ -319,7 +320,7 @@ func (db *DB) removeExpiredChunks() error {
 	for i := len(db.rchunks) - 1; i >= 0; i-- {
 		rchunk := db.rchunks[i]
 		// Check whether this whole chunk is expired by looking at the most recent timestamp.
-		if db.since(rchunk.lastTimestamp) <= db.expiry {
+		if db.since(time.Unix(0, rchunk.lastTimestamp)) <= db.expiry {
 			break
 		}
 		// Remove the log file.

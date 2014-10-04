@@ -19,12 +19,6 @@ General implementation notes:
 
 ## Speedup
 
-- Periodic pauses (GC?)
-  - Change the refCache to be a map[[20]byte]RecordRef so it has no pointers:
-    - See about changing one/both of the RecordRef fields from uint64s to uint32
-      - Should be fine to change offset to uint32 -- we control max chunk size
-      - Seq #s could be 4 bytes as well...just need to ensure that chunks aren't too small (panic on rollover)
-
 - Slow initial loading when DB is large
   - Profile + optimize
   - Parallelize

@@ -3,7 +3,6 @@ package main
 import (
 	"os"
 	"strings"
-	"time"
 
 	"github.com/edsrzf/mmap-go"
 )
@@ -22,7 +21,7 @@ type WriteChunk struct {
 	logf *os.File
 
 	index         []IndexEntry
-	lastTimestamp time.Time
+	lastTimestamp int64
 }
 
 func NewWriteChunk(basename string, maxSize uint64) (*WriteChunk, error) {
@@ -52,7 +51,7 @@ func (wc *WriteChunk) WriteRecord(hash keyHash, r *Record) (offset uint32, err e
 		return
 	}
 	wc.index = append(wc.index, IndexEntry{hash, offset})
-	if r.t.After(wc.lastTimestamp) {
+	if r.t > wc.lastTimestamp {
 		wc.lastTimestamp = r.t
 	}
 	return offset, nil
@@ -74,7 +73,7 @@ type ReadChunk struct {
 	f             *os.File // RDONLY
 	m             mmap.MMap
 	index         []IndexEntry
-	lastTimestamp time.Time
+	lastTimestamp int64
 }
 
 func LoadReadChunk(basename string) (index []IndexEntry, rc *ReadChunk, err error) {
