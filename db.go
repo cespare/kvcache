@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"io/ioutil"
 	"log"
+	"math"
 	"os"
 	"path/filepath"
 	"strings"
@@ -22,8 +23,8 @@ type Record struct {
 }
 
 type RecordRef struct {
-	seq    uint64
-	offset uint64
+	seq    uint32
+	offset uint32
 }
 
 type keyHash [20]byte // The SHA-1 hash of a key
@@ -41,7 +42,7 @@ type DB struct {
 	mu *sync.Mutex // Protects all of the following
 
 	// Chunk files
-	seq     uint64 // Current base sequence # for wchunk; seq+i+1 is the sequence # for an rchunk
+	seq     uint32 // Current base sequence # for wchunk; seq+i+1 is the sequence # for an rchunk
 	wchunk  *WriteChunk
 	rchunks []*ReadChunk
 
@@ -52,7 +53,10 @@ type DB struct {
 	dirFile *os.File // Handle for flocking the DB
 }
 
-func newDB(chunkSize uint64, expiry time.Duration, dir string) *DB {
+func newDB(chunkSize uint64, expiry time.Duration, dir string) (*DB, error) {
+	if chunkSize > math.MaxUint32 {
+		return nil, fmt.Errorf("%d is too large for a chunk size (cannot be larger than 1<<32)")
+	}
 	return &DB{
 		chunkSize: chunkSize,
 		expiry:    expiry,
@@ -64,7 +68,7 @@ func newDB(chunkSize uint64, expiry time.Duration, dir string) *DB {
 		mu:       new(sync.Mutex),
 		memCache: make(map[keyHash]*Record),
 		refCache: make(map[keyHash]RecordRef),
-	}
+	}, nil
 }
 
 var ErrDBDirExists = errors.New("DB dir already exists")
@@ -77,7 +81,10 @@ func NewDB(chunkSize uint64, expiry time.Duration, dir string) (*DB, error) {
 		}
 		return nil, err
 	}
-	db := newDB(chunkSize, expiry, dir)
+	db, err := newDB(chunkSize, expiry, dir)
+	if err != nil {
+		return nil, err
+	}
 	if err := db.addFlock(); err != nil {
 		return nil, err
 	}
@@ -99,7 +106,10 @@ func OpenDB(chunkSize uint64, expiry time.Duration, dir string) (*DB, error) {
 	default:
 		return nil, err
 	}
-	db = newDB(chunkSize, expiry, dir)
+	db, err = newDB(chunkSize, expiry, dir)
+	if err != nil {
+		return nil, err
+	}
 	if err := db.addFlock(); err != nil {
 		return nil, err
 	}
@@ -278,6 +288,9 @@ func (db *DB) Rotate() error {
 		}
 	}
 	// Open the new chunk -- do this early, because this is where errors typically occur
+	if db.seq == math.MaxUint32 {
+		panic("sequence number wrapped")
+	}
 	db.seq++
 	wchunk, err := NewWriteChunk(db.logName(db.seq), db.chunkSize)
 	if err != nil {
@@ -329,11 +342,11 @@ func (db *DB) removeExpiredChunks() error {
 
 const chunkFormat = "chunk%010d"
 
-func (db *DB) logName(seq uint64) string {
+func (db *DB) logName(seq uint32) string {
 	return filepath.Join(db.dir, fmt.Sprintf(chunkFormat, seq))
 }
 
-func (db *DB) rchunkForSeq(seq uint64) *ReadChunk {
+func (db *DB) rchunkForSeq(seq uint32) *ReadChunk {
 	return db.rchunks[int(db.seq-seq-1)]
 }
 
@@ -363,7 +376,7 @@ var (
 // findDBFiles discovers and sanity-checks the DB files in dir.
 // Index and log files must be paired. There cannot be holes in the sequence.
 // Sequence numbers are returned in sorted order.
-func findDBFiles(dir string) (seqs []uint64, err error) {
+func findDBFiles(dir string) (seqs []uint32, err error) {
 	var idxFiles []string
 	var logFiles []string
 	for _, filename := range lsDir(dir) {
@@ -411,7 +424,7 @@ func lsDir(dir string) []string {
 }
 
 // seqFromBasename turns a base chunk name (like "chunk0000000123") into a sequence number (like 123).
-func seqFromBasename(basename string) (seq uint64, err error) {
+func seqFromBasename(basename string) (seq uint32, err error) {
 	_, err = fmt.Sscanf(basename, chunkFormat, &seq)
 	return
 }

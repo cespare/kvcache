@@ -9,6 +9,7 @@ import (
 	"hash"
 	"hash/crc32"
 	"io"
+	"math"
 	"os"
 	"time"
 
@@ -87,7 +88,7 @@ type WriteLog struct {
 	logw       *sizeWriteCloser
 	idxw       *crcWriteCloser
 	maxSize    uint64
-	lastOffset uint64
+	lastOffset uint32
 	scratch    []byte
 }
 
@@ -125,7 +126,7 @@ var (
 	ErrWriteLogFull = errors.New("write log is filled to max capacity")
 )
 
-func (wl *WriteLog) WriteRecord(rec *Record) (offset uint64, err error) {
+func (wl *WriteLog) WriteRecord(rec *Record) (offset uint32, err error) {
 	if len(rec.key) > maxKeyLen {
 		return 0, ErrKeyTooLong
 	}
@@ -133,10 +134,11 @@ func (wl *WriteLog) WriteRecord(rec *Record) (offset uint64, err error) {
 		return 0, ErrValTooLong
 	}
 
-	offset = wl.logw.Size()
-	if offset >= wl.maxSize {
+	size := wl.logw.Size()
+	if size >= wl.maxSize {
 		return 0, ErrWriteLogFull
 	}
+	offset = uint32(size)
 
 	// Write to the log
 	binary.BigEndian.PutUint64(wl.scratch, uint64(rec.t.UnixNano()))
@@ -167,7 +169,7 @@ func (wl *WriteLog) WriteRecord(rec *Record) (offset uint64, err error) {
 	}
 	off := offset - wl.lastOffset
 	wl.lastOffset = offset
-	no := binary.PutUvarint(wl.scratch[nk+len(rec.key):], off)
+	no := binary.PutUvarint(wl.scratch[nk+len(rec.key):], uint64(off))
 	if _, err := wl.idxw.Write(wl.scratch[:nk+len(rec.key)+no]); err != nil {
 		return 0, err
 	}
@@ -198,6 +200,7 @@ var (
 	ErrCorruptIndex     = errors.New("encountered an invalid index record")
 	ErrChecksumMismatch = errors.New("index checksum does not match contents")
 	ErrExtraContent     = errors.New("junk data at end of index file")
+	ErrOffsetTooLarge   = errors.New("found offset too large")
 )
 
 func ParseIndex(r io.Reader) (index []IndexEntry, logSize uint64, err error) {
@@ -215,7 +218,7 @@ func ParseIndex(r io.Reader) (index []IndexEntry, logSize uint64, err error) {
 	}
 	crc.Write(header)
 
-	var offset uint64
+	var offset uint32
 	for {
 		// Read the key
 		var nk int64
@@ -238,13 +241,17 @@ func ParseIndex(r io.Reader) (index []IndexEntry, logSize uint64, err error) {
 		crc.Write(key)
 
 		// Read the offset
-		var off uint64
+		var off64 uint64
 		byteRdr = newByteReader(br)
-		off, err = binary.ReadUvarint(byteRdr)
+		off64, err = binary.ReadUvarint(byteRdr)
 		if err != nil {
 			return
 		}
-		offset += off
+		if off64 > math.MaxUint32 {
+			err = ErrOffsetTooLarge
+			return
+		}
+		offset += uint32(off64)
 		crc.Write(byteRdr.Bytes())
 
 		index = append(index, IndexEntry{
@@ -322,7 +329,7 @@ var (
 	ErrBadRecordValLen = errors.New("got bad value (or could not read) for record value length")
 )
 
-func (rl *ReadLog) ReadRecord(offset uint64) (*Record, error) {
+func (rl *ReadLog) ReadRecord(offset uint32) (*Record, error) {
 	b := rl.b[offset:]
 	t := time.Unix(0, int64(binary.BigEndian.Uint64(b[:8]))).UTC()
 

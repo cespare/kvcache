@@ -10,7 +10,7 @@ import (
 
 type IndexEntry struct {
 	hash   keyHash
-	offset uint64
+	offset uint32
 }
 
 type WriteChunk struct {
@@ -46,7 +46,7 @@ func NewWriteChunk(basename string, maxSize uint64) (*WriteChunk, error) {
 	}, nil
 }
 
-func (wc *WriteChunk) WriteRecord(hash keyHash, r *Record) (offset uint64, err error) {
+func (wc *WriteChunk) WriteRecord(hash keyHash, r *Record) (offset uint32, err error) {
 	offset, err = wc.WriteLog.WriteRecord(r)
 	if err != nil {
 		return
