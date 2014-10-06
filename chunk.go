@@ -46,7 +46,7 @@ func NewWriteChunk(basename string, maxSize uint64) (*WriteChunk, error) {
 }
 
 func (wc *WriteChunk) WriteRecord(hash keyHash, r *Record) (offset uint32, err error) {
-	offset, err = wc.WriteLog.WriteRecord(r)
+	offset, err = wc.WriteLog.WriteRecord(hash, r)
 	if err != nil {
 		return
 	}

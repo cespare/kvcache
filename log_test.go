@@ -48,21 +48,21 @@ const (
 		"\x13\x95\xcb\x4f\x5e\x92\x00\x00" + "\x04key1" + "\x13" + testSnappyVal + // record 1
 		"\x13\x95\xcb\x4f\x9a\x2c\xca\x00" + "\x04key2" + "\x13" + testSnappyVal // record 2
 	testIdx1 = "\336idx\x00\x00\x00\x01" + // header
-		"\x08key1\x08" + // record 1
-		"\x08key2\x21" + // record 2
-		"\x01\x4a\xf6\xb7\xa6\x83" // trailer
+		"\x01\x10\x73\xab\x6c\xda\x4b\x99\x1c\xd2\x9f\x9e\x83\xa3\x07\xf3\x40\x04\xae\x93\x27\x08" + // record 1
+		"\x01\x87\xba\x78\xe0\xf0\x3a\xfc\xef\x60\x65\x7f\x34\x2e\xc5\x56\x73\x68\xfa\xdd\x8c\x21" + // record 2
+		"\x00\x4a\x94\x38\x4e\x8f" // trailer
 	testLog2 = "\336log\x00\x00\x00\x01" + // header
 		"\x13\x95\xcb\x4f\xd5\xc7\x94\x00" + "\x04key3" + "\x13" + testSnappyVal + // record 3
 		"\x13\x95\xcb\x50\x11\x62\x5e\x00" + "\x04key4" + "\x13" + testSnappyVal // record 4
 	testIdx2 = "\336idx\x00\x00\x00\x01" + // header
-		"\x08key2\x08" + // record 3
-		"\x08key3\x21" + // record 4
-		"\x01\x4a\xd7\x29\x29\x62" // trailer
+		"\x01\x3b\x88\xea\x81\x6c\x78\xec\x10\x40\x41\xa7\x5e\x78\xf3\x2e\xc8\x04\xea\xac\x39\x08" + // record 3
+		"\x01\xc3\x4b\xf5\xa9\xec\xca\x6e\xdc\x31\x28\x01\x8b\x1d\xd2\x35\xa0\xf7\xbd\xff\x20\x21" + // record 4
+		"\x00\x4a\x67\xa6\x75\x19" // trailer
 	testLog3 = "\336log\x00\x00\x00\x01" + // header
 		"\x13\x95\xcb\x50\x4c\xfd\x28\x00" + "\x04key5" + "\x13" + testSnappyVal // record 5
 	testIdx3 = "\336idx\x00\x00\x00\x01" + // header
-		"\x08key5\x08" + // record 5
-		"\x01\x29\x6a\xcc\x9e\x81" // trailer
+		"\x01\xaf\x06\x5e\x03\xe2\x2f\xe1\xf5\xf9\x5b\x8c\xe9\xf4\x76\x1c\x74\xda\x07\x68\x57\x08" + // record 5
+		"\x00\x29\x0b\x3f\xe7\x19" // trailer
 )
 
 const (
@@ -77,16 +77,16 @@ func TestWriteLog(t *testing.T) {
 	asrt.Equal(t, err, nil)
 
 	// Write some vals
-	offset, err := wl.WriteRecord(testRecords[0])
+	offset, err := wl.WriteRecord(sha("key1"), testRecords[0])
 	asrt.Equal(t, err, nil)
 	asrt.Equal(t, int(offset), headerLen)
 
 	// We can write one more record because we don't declare wl full until we're over the max size.
-	offset, err = wl.WriteRecord(testRecords[1])
+	offset, err = wl.WriteRecord(sha("key2"), testRecords[1])
 	asrt.Equal(t, err, nil)
 	asrt.Equal(t, int(offset), headerLen+recordLen)
 
-	offset, err = wl.WriteRecord(testRecords[2])
+	offset, err = wl.WriteRecord(sha("key3"), testRecords[2])
 	asrt.Equal(t, err, ErrWriteLogFull)
 
 	err = wl.Close()

@@ -3,7 +3,6 @@ package main
 import (
 	"bufio"
 	"bytes"
-	"crypto/sha1"
 	"encoding/binary"
 	"errors"
 	"hash"
@@ -38,15 +37,15 @@ import (
 //
 // A record consists of:
 //
-// - varint-encoded key size: K
-// - key (K bytes)
+// - extension byte: 1
+// - SHA-1 hash of the key (20 bytes)
 // - uvarint-encoded offset delta (increasing within the index)
 //   For the first index record, this is the offset;
 //   for subsequent records, it is the difference from the prior offset.
 //
 // A trailer consists of:
 //
-// - varint-encoded -1 (to distinguish from a record)
+// - extension byte: 0 (to distinguish from a record)
 // - uvarint-encoded filesize of the paired log file
 // - 4-byte IEEE CRC-32 checksum of everything preceding in this index file.
 //
@@ -125,7 +124,7 @@ var (
 	ErrWriteLogFull = errors.New("write log is filled to max capacity")
 )
 
-func (wl *WriteLog) WriteRecord(rec *Record) (offset uint32, err error) {
+func (wl *WriteLog) WriteRecord(hash keyHash, rec *Record) (offset uint32, err error) {
 	if len(rec.key) > maxKeyLen {
 		return 0, ErrKeyTooLong
 	}
@@ -160,16 +159,16 @@ func (wl *WriteLog) WriteRecord(rec *Record) (offset uint32, err error) {
 	}
 
 	// Write to the index
-	nk = binary.PutVarint(wl.scratch, int64(len(rec.key)))
-	copy(wl.scratch[nk:], rec.key)
+	wl.scratch[0] = 1
+	copy(wl.scratch[1:], hash[:])
 
 	if offset <= wl.lastOffset {
 		panic("offset is smaller than lastOffset")
 	}
 	off := offset - wl.lastOffset
 	wl.lastOffset = offset
-	no := binary.PutUvarint(wl.scratch[nk+len(rec.key):], uint64(off))
-	if _, err := wl.idxw.Write(wl.scratch[:nk+len(rec.key)+no]); err != nil {
+	no := binary.PutUvarint(wl.scratch[nk+len(hash):], uint64(off))
+	if _, err := wl.idxw.Write(wl.scratch[:nk+len(hash)+no]); err != nil {
 		return 0, err
 	}
 
@@ -180,10 +179,10 @@ func (wl *WriteLog) Close() error {
 	if err := wl.logw.Close(); err != nil {
 		return err
 	}
-	scratch := make([]byte, 16)
-	n := binary.PutVarint(scratch, -1)
-	n += binary.PutUvarint(scratch[n:], wl.logw.Size())
-	if _, err := wl.idxw.Write(scratch[:n]); err != nil {
+	scratch := make([]byte, 9)
+	scratch[0] = 0
+	n := binary.PutUvarint(scratch[1:], wl.logw.Size())
+	if _, err := wl.idxw.Write(scratch[:n+1]); err != nil {
 		return err
 	}
 	if _, err := wl.idxw.Write(wl.idxw.Sum()); err != nil {
@@ -196,7 +195,6 @@ var (
 	ErrBadMagic         = errors.New("log/index file had a bad magic value")
 	ErrBadVersion       = errors.New("log/index file had a version not equal to 1")
 	ErrIncompleteIndex  = errors.New("index file is incomplete")
-	ErrCorruptIndex     = errors.New("encountered an invalid index record")
 	ErrChecksumMismatch = errors.New("index checksum does not match contents")
 	ErrExtraContent     = errors.New("junk data at end of index file")
 	ErrOffsetTooLarge   = errors.New("found offset too large")
@@ -220,28 +218,24 @@ func ParseIndex(r io.Reader) (index []IndexEntry, logSize uint64, err error) {
 	var offset uint32
 	for {
 		// Read the key
-		var nk int64
-		byteRdr := newByteReader(br)
-		nk, err = binary.ReadVarint(byteRdr)
+		var c byte
+		c, err = br.ReadByte()
 		if err != nil {
 			return
 		}
-		crc.Write(byteRdr.Bytes())
-		if nk == -1 {
+		crc.Write([]byte{c})
+		if c == 0 {
 			break
 		}
-		if nk < 0 || nk > maxKeyLen {
-			return nil, 0, ErrCorruptIndex
-		}
-		key := make([]byte, int(nk))
-		if _, err = io.ReadFull(br, key); err != nil {
+		var hash [20]byte
+		if _, err = io.ReadFull(br, hash[:]); err != nil {
 			return
 		}
-		crc.Write(key)
+		crc.Write(hash[:])
 
 		// Read the offset
 		var off64 uint64
-		byteRdr = newByteReader(br)
+		byteRdr := newByteReader(br)
 		off64, err = binary.ReadUvarint(byteRdr)
 		if err != nil {
 			return
@@ -254,7 +248,7 @@ func ParseIndex(r io.Reader) (index []IndexEntry, logSize uint64, err error) {
 		crc.Write(byteRdr.Bytes())
 
 		index = append(index, IndexEntry{
-			hash:   sha1.Sum(key),
+			hash:   hash,
 			offset: offset,
 		})
 	}
