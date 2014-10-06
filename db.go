@@ -114,36 +114,9 @@ func OpenDB(chunkSize uint64, expiry time.Duration, dir string) (*DB, error) {
 	if err := db.addFlock(); err != nil {
 		return nil, err
 	}
-	start := time.Now()
-	seqs, err := findDBFiles(dir)
-	if err != nil {
+	if err := db.loadReadChunks(dir); err != nil {
 		return nil, err
 	}
-	if len(seqs) > 0 {
-		db.seq = seqs[len(seqs)-1] + 1
-	}
-	log.Printf("Found %d existing chunks; next seq=%d", len(seqs), db.seq)
-
-	// Iterate basenames from the back, because they're sorted and the highest-numbered
-	// go at the front of db.rchunks.
-	for i := len(seqs) - 1; i >= 0; i-- {
-		seq := seqs[i]
-		index, rchunk, err := LoadReadChunk(db.logName(seq))
-		if err != nil {
-			return nil, err
-		}
-		for _, entry := range index {
-			db.refCache.Put(entry.hash, RecordRef{
-				seq:    seq,
-				offset: entry.offset,
-			})
-		}
-		db.rchunks = append(db.rchunks, rchunk)
-		log.Printf("Loaded chunk %d", seq)
-	}
-
-	log.Printf("Finished loading DB; loaded %d chunks in %.3fs",
-		len(seqs), time.Since(start).Seconds())
 
 	wchunk, err := NewWriteChunk(db.logName(db.seq), db.chunkSize)
 	if err != nil {
@@ -366,6 +339,96 @@ func (db *DB) addFlock() error {
 func (db *DB) removeFlock() error {
 	defer db.dirFile.Close()
 	return syscall.Flock(int(db.dirFile.Fd()), syscall.LOCK_UN)
+}
+
+func (db *DB) loadReadChunks(dir string) error {
+	start := time.Now()
+	seqs, err := findDBFiles(dir)
+	if err != nil {
+		return err
+	}
+	if len(seqs) > 0 {
+		db.seq = seqs[len(seqs)-1] + 1
+	}
+	log.Printf("Found %d existing chunks; next seq=%d", len(seqs), db.seq)
+
+	type task struct {
+		i      int
+		seq    uint32
+		index  []IndexEntry
+		rchunk *ReadChunk
+	}
+
+	// Parse and load the read chunks in parallel -- it's fairly CPU-intensive.
+	// TODO: this fan-out fan-in logic can definitely be simplified.
+	inputc := make(chan *task)
+	outputc := make(chan *task)
+	errc := make(chan error)
+	var wg sync.WaitGroup
+	go func() {
+		for i, seq := range seqs {
+			inputc <- &task{
+				i:   i,
+				seq: seq,
+			}
+		}
+		close(inputc)
+	}()
+	const procs = 32
+	wg.Add(procs)
+	for i := 0; i < procs; i++ {
+		go func() {
+			defer wg.Done()
+			for task := range inputc {
+				index, rchunk, err := LoadReadChunk(db.logName(task.seq))
+				if err != nil {
+					errc <- err
+					return
+				}
+				task.index = index
+				task.rchunk = rchunk
+				outputc <- task
+			}
+		}()
+	}
+	done := make(chan struct{})
+	go func() {
+		wg.Wait()
+		close(done)
+	}()
+	db.rchunks = make([]*ReadChunk, len(seqs))
+aggregate:
+	for {
+		select {
+		case err := <-errc:
+			go func() {
+				// Drain chans to free up goroutines
+				for _ = range inputc {
+				}
+				for _ = range outputc {
+				}
+				for _ = range errc {
+				}
+			}()
+			return err
+		case task := <-outputc:
+			for _, entry := range task.index {
+				db.refCache.Put(entry.hash, RecordRef{
+					seq:    task.seq,
+					offset: entry.offset,
+				})
+			}
+			// The chunks are stored in reverse order, with the highest-numbered (most recent) chunk at the front.
+			db.rchunks[len(seqs)-task.i-1] = task.rchunk
+			log.Printf("Loaded chunk %d", task.seq)
+		case <-done:
+			break aggregate
+		}
+	}
+
+	log.Printf("Finished loading DB; loaded %d chunks in %.3fs",
+		len(seqs), time.Since(start).Seconds())
+	return nil
 }
 
 var (
