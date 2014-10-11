@@ -120,16 +120,14 @@ func NewWriteLog(idxWriter, logWriter io.WriteCloser, maxSize uint64) (*WriteLog
 
 var (
 	ErrKeyTooLong   = errors.New("key is too long")
-	ErrValTooLong   = errors.New("value is too long")
 	ErrWriteLogFull = errors.New("write log is filled to max capacity")
 )
 
-func (wl *WriteLog) WriteRecord(hash keyHash, rec *Record) (offset uint32, err error) {
+// WriteRecord inserts a single record into wl. As an optimization, the SHA-1 hash of the key and the Snappy
+// encoding of the value are precomputed.
+func (wl *WriteLog) WriteRecord(rec *EncodedRecord) (offset uint32, err error) {
 	if len(rec.key) > maxKeyLen {
 		return 0, ErrKeyTooLong
-	}
-	if len(rec.val) > maxValLen {
-		return 0, ErrValTooLong
 	}
 
 	size := wl.logw.Size()
@@ -143,32 +141,25 @@ func (wl *WriteLog) WriteRecord(hash keyHash, rec *Record) (offset uint32, err e
 	nk := binary.PutUvarint(wl.scratch[8:], uint64(len(rec.key)))
 	copy(wl.scratch[8+nk:], rec.key)
 
-	encodedVal, err := snappy.Encode(nil, rec.val)
-	if err != nil {
-		// snappy.Encode never produces a non-nil error.
-		// https://code.google.com/p/snappy-go/issues/detail?id=8
-		panic("cannot happen")
-	}
-
-	nv := binary.PutUvarint(wl.scratch[8+nk+len(rec.key):], uint64(len(encodedVal)))
+	nv := binary.PutUvarint(wl.scratch[8+nk+len(rec.key):], uint64(len(rec.snappyVal)))
 	if _, err := wl.logw.Write(wl.scratch[:8+nk+len(rec.key)+nv]); err != nil {
 		return 0, err
 	}
-	if _, err := wl.logw.Write(encodedVal); err != nil {
+	if _, err := wl.logw.Write(rec.snappyVal); err != nil {
 		return 0, err
 	}
 
 	// Write to the index
 	wl.scratch[0] = 1
-	copy(wl.scratch[1:], hash[:])
+	copy(wl.scratch[1:], rec.hash[:])
 
 	if offset <= wl.lastOffset {
 		panic("offset is smaller than lastOffset")
 	}
 	off := offset - wl.lastOffset
 	wl.lastOffset = offset
-	no := binary.PutUvarint(wl.scratch[nk+len(hash):], uint64(off))
-	if _, err := wl.idxw.Write(wl.scratch[:nk+len(hash)+no]); err != nil {
+	no := binary.PutUvarint(wl.scratch[nk+len(rec.hash):], uint64(off))
+	if _, err := wl.idxw.Write(wl.scratch[:nk+len(rec.hash)+no]); err != nil {
 		return 0, err
 	}
 

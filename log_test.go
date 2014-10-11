@@ -15,31 +15,36 @@ const (
 	testSnappyVal = "\x11@this is the value" // snappy encoding of testVal
 )
 
-var testRecords = []*Record{
+var testRecords = []*EncodedRecord{
 	{
-		t:   ts("2014-09-21T00:00:00Z").UnixNano(),
-		key: []byte("key1"),
-		val: []byte(testVal),
+		t:         ts("2014-09-21T00:00:00Z").UnixNano(),
+		hash:      sha("key1"),
+		key:       []byte("key1"),
+		snappyVal: SnappyEncode([]byte(testVal)),
 	},
 	{
-		t:   ts("2014-09-21T00:00:01Z").UnixNano(),
-		key: []byte("key2"),
-		val: []byte(testVal),
+		t:         ts("2014-09-21T00:00:01Z").UnixNano(),
+		hash:      sha("key2"),
+		key:       []byte("key2"),
+		snappyVal: SnappyEncode([]byte(testVal)),
 	},
 	{
-		t:   ts("2014-09-21T00:00:02Z").UnixNano(),
-		key: []byte("key3"),
-		val: []byte(testVal),
+		t:         ts("2014-09-21T00:00:02Z").UnixNano(),
+		hash:      sha("key3"),
+		key:       []byte("key3"),
+		snappyVal: SnappyEncode([]byte(testVal)),
 	},
 	{
-		t:   ts("2014-09-21T00:00:03Z").UnixNano(),
-		key: []byte("key4"),
-		val: []byte(testVal),
+		t:         ts("2014-09-21T00:00:03Z").UnixNano(),
+		hash:      sha("key4"),
+		key:       []byte("key4"),
+		snappyVal: SnappyEncode([]byte(testVal)),
 	},
 	{
-		t:   ts("2014-09-21T00:00:04Z").UnixNano(),
-		key: []byte("key5"),
-		val: []byte(testVal),
+		t:         ts("2014-09-21T00:00:04Z").UnixNano(),
+		hash:      sha("key5"),
+		key:       []byte("key5"),
+		snappyVal: SnappyEncode([]byte(testVal)),
 	},
 }
 
@@ -77,16 +82,16 @@ func TestWriteLog(t *testing.T) {
 	asrt.Equal(t, err, nil)
 
 	// Write some vals
-	offset, err := wl.WriteRecord(sha("key1"), testRecords[0])
+	offset, err := wl.WriteRecord(testRecords[0])
 	asrt.Equal(t, err, nil)
 	asrt.Equal(t, int(offset), headerLen)
 
 	// We can write one more record because we don't declare wl full until we're over the max size.
-	offset, err = wl.WriteRecord(sha("key2"), testRecords[1])
+	offset, err = wl.WriteRecord(testRecords[1])
 	asrt.Equal(t, err, nil)
 	asrt.Equal(t, int(offset), headerLen+recordLen)
 
-	offset, err = wl.WriteRecord(sha("key3"), testRecords[2])
+	offset, err = wl.WriteRecord(testRecords[2])
 	asrt.Equal(t, err, ErrWriteLogFull)
 
 	err = wl.Close()

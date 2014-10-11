@@ -14,6 +14,8 @@ import (
 	"sync"
 	"syscall"
 	"time"
+
+	"code.google.com/p/snappy-go/snappy"
 )
 
 type Record struct {
@@ -21,6 +23,13 @@ type Record struct {
 	t   int64
 	key []byte
 	val []byte
+}
+
+type EncodedRecord struct {
+	t         int64
+	hash      keyHash
+	key       []byte
+	snappyVal []byte
 }
 
 type RecordRef struct {
@@ -184,8 +193,14 @@ type FatalDBError struct {
 
 func (e FatalDBError) Error() string { return e.error.Error() }
 
+var ErrValTooLong = errors.New("value is too long")
+
 func (db *DB) Put(k, v []byte) (rotated bool, err error) {
 	hash := sha1.Sum(k)
+	if len(v) > maxValLen {
+		return false, ErrValTooLong
+	}
+	snappyVal := SnappyEncode(v)
 
 	db.mu.Lock()
 	defer db.mu.Unlock()
@@ -200,12 +215,19 @@ func (db *DB) Put(k, v []byte) (rotated bool, err error) {
 		return rotated, ErrKeyExist
 	}
 
+	t := db.now().UnixNano()
 	r := Record{
-		t:   db.now().UnixNano(),
+		t:   t,
 		key: k,
 		val: v,
 	}
-	offset, err := db.wchunk.WriteRecord(hash, &r)
+	er := EncodedRecord{
+		t:         t,
+		hash:      hash,
+		key:       k,
+		snappyVal: snappyVal,
+	}
+	offset, err := db.wchunk.WriteRecord(&er)
 	switch err {
 	case ErrWriteLogFull:
 		if err = db.Rotate(); err != nil {
@@ -215,7 +237,7 @@ func (db *DB) Put(k, v []byte) (rotated bool, err error) {
 			return rotated, FatalDBError{err}
 		}
 		rotated = true
-		offset, err = db.wchunk.WriteRecord(hash, &r)
+		offset, err = db.wchunk.WriteRecord(&er)
 		if err != nil {
 			return rotated, err
 		}
@@ -491,4 +513,14 @@ func lsDir(dir string) []string {
 func seqFromBasename(basename string) (seq uint32, err error) {
 	_, err = fmt.Sscanf(basename, chunkFormat, &seq)
 	return
+}
+
+func SnappyEncode(b []byte) []byte {
+	enc, err := snappy.Encode(nil, b)
+	if err != nil {
+		// snappy.Encode never produces a non-nil error.
+		// https://code.google.com/p/snappy-go/issues/detail?id=8
+		panic("cannot happen")
+	}
+	return enc
 }

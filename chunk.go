@@ -45,14 +45,14 @@ func NewWriteChunk(basename string, maxSize uint64) (*WriteChunk, error) {
 	}, nil
 }
 
-func (wc *WriteChunk) WriteRecord(hash keyHash, r *Record) (offset uint32, err error) {
-	offset, err = wc.WriteLog.WriteRecord(hash, r)
+func (wc *WriteChunk) WriteRecord(er *EncodedRecord) (offset uint32, err error) {
+	offset, err = wc.WriteLog.WriteRecord(er)
 	if err != nil {
 		return
 	}
-	wc.index = append(wc.index, IndexEntry{hash, offset})
-	if r.t > wc.lastTimestamp {
-		wc.lastTimestamp = r.t
+	wc.index = append(wc.index, IndexEntry{er.hash, offset})
+	if er.t > wc.lastTimestamp {
+		wc.lastTimestamp = er.t
 	}
 	return offset, nil
 }
