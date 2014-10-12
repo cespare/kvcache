@@ -6,7 +6,6 @@ import (
 	"math/rand"
 	"time"
 
-	"github.com/bmizerany/perks/quantile"
 	"github.com/garyburd/redigo/redis"
 )
 
@@ -97,18 +96,20 @@ func collectStats(c <-chan float64) {
 	}
 }
 
+var thresholdsMS = []float64{1, 10, 50}
+
 type Stats struct {
-	start     time.Time
-	max       float64
-	total     float64
-	samples   float64
-	quantiles *quantile.Stream
+	start       time.Time
+	max         float64
+	total       float64
+	samples     float64
+	aboveThresh []float64
 }
 
 func NewStats() *Stats {
 	return &Stats{
-		start:     time.Now(),
-		quantiles: quantile.NewTargeted(0.5, 0.9, 0.99, 0.999),
+		start:       time.Now(),
+		aboveThresh: make([]float64, len(thresholdsMS)),
 	}
 }
 
@@ -118,11 +119,18 @@ func (s *Stats) Add(f float64) {
 	}
 	s.total += f
 	s.samples++
-	s.quantiles.Insert(f)
+	for i, thresh := range thresholdsMS {
+		if f > thresh {
+			s.aboveThresh[i]++
+		}
+	}
 }
 
 func (s *Stats) String() string {
-	return fmt.Sprintf("%.0f samples; %.1f qps; max = %.2fms; mean = %.2fms; median = %.2fms; 0.90pct = %.2fms; 0.99pct = %.2fms; 0.999pct = %.2fms",
+	return fmt.Sprintf("%.0f samples; %.1f qps; max = %.2fms; mean = %.2fms; >%.1fms = %.2f%%; >%.1fms = %.2f%%; >%.1fms = %.2f%%",
 		s.samples, s.samples/time.Since(s.start).Seconds(), s.max, s.total/s.samples,
-		s.quantiles.Query(0.5), s.quantiles.Query(0.9), s.quantiles.Query(0.99), s.quantiles.Query(0.999))
+		thresholdsMS[0], (s.aboveThresh[0]/s.total)*100,
+		thresholdsMS[1], (s.aboveThresh[1]/s.total)*100,
+		thresholdsMS[2], (s.aboveThresh[2]/s.total)*100,
+	)
 }
