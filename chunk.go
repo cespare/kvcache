@@ -16,9 +16,9 @@ type WriteChunk struct {
 	*WriteLog
 	basename string
 
-	// WRONLY files
-	idxf *os.File
-	logf *os.File
+	// bufWriteClosers on top of WRONLY files
+	idx *bufWriteCloser
+	log *bufWriteCloser
 
 	index         []IndexEntry
 	lastTimestamp int64
@@ -33,17 +33,21 @@ func NewWriteChunk(basename string, maxSize uint64) (*WriteChunk, error) {
 	if err != nil {
 		return nil, err
 	}
-	log, err := NewWriteLog(idxf, logf, maxSize)
+	idx := newBufWriteCloser(idxf)
+	log := newBufWriteCloser(logf)
+	wl, err := NewWriteLog(idx, log, maxSize)
 	if err != nil {
 		return nil, err
 	}
 	return &WriteChunk{
 		basename: basename,
-		idxf:     idxf,
-		logf:     logf,
-		WriteLog: log,
+		idx:      idx,
+		log:      log,
+		WriteLog: wl,
 	}, nil
 }
+
+const maxWriteBufSize = 32e3
 
 func (wc *WriteChunk) WriteRecord(er *EncodedRecord) (offset uint32, err error) {
 	offset, err = wc.WriteLog.WriteRecord(er)
@@ -54,11 +58,19 @@ func (wc *WriteChunk) WriteRecord(er *EncodedRecord) (offset uint32, err error) 
 	if er.t > wc.lastTimestamp {
 		wc.lastTimestamp = er.t
 	}
+	if wc.idx.Buffered() > maxWriteBufSize || wc.log.Buffered() > maxWriteBufSize {
+		if err := wc.idx.Flush(); err != nil {
+			return 0, err
+		}
+		if err := wc.log.Flush(); err != nil {
+			return 0, err
+		}
+	}
 	return offset, nil
 }
 
 func (wc *WriteChunk) Close() error {
-	return wc.WriteLog.Close() // takes care of closing wc.idxf and wc.logf
+	return wc.WriteLog.Close() // takes care of closing wc.idx and wc.log
 }
 
 func (wc *WriteChunk) ReopenAsReadChunk() (*ReadChunk, error) {
