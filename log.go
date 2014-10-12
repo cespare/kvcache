@@ -5,6 +5,7 @@ import (
 	"bytes"
 	"encoding/binary"
 	"errors"
+	"hash"
 	"hash/crc32"
 	"io"
 	"math"
@@ -95,8 +96,8 @@ func NewWriteLog(idxWriter, logWriter io.WriteCloser, maxSize uint64) (*WriteLog
 	scratch := make([]byte, 8+8+maxKeyLen+8)
 
 	wl := &WriteLog{
-		logw:    newSizeWriteCloser(logWriter),
-		idxw:    newCRCWriteCloser(idxWriter),
+		logw:    &sizeWriteCloser{logWriter, 0},
+		idxw:    &crcWriteCloser{idxWriter, crc32.NewIEEE()},
 		maxSize: maxSize,
 		scratch: scratch,
 	}
@@ -339,4 +340,57 @@ func (rl *ReadLog) ReadRecord(offset uint32) (*Record, error) {
 		key: key,
 		val: val,
 	}, nil
+}
+
+// A sizeWriteCloser is an io.WriteCloser that tracks its written size.
+type sizeWriteCloser struct {
+	io.WriteCloser
+	size uint64
+}
+
+func (sw *sizeWriteCloser) Size() uint64 { return sw.size }
+
+func (sw *sizeWriteCloser) Write(b []byte) (n int, err error) {
+	n, err = sw.WriteCloser.Write(b)
+	sw.size += uint64(n)
+	return
+}
+
+// A crcWriteCloser is an io.WriteCloser that maintains an IEEE CRC-32 checksum of the written contents.
+type crcWriteCloser struct {
+	io.WriteCloser
+	crc hash.Hash32 // Running CRC-32 checksum of the index
+}
+
+func (cw *crcWriteCloser) Write(b []byte) (n int, err error) {
+	n, err = cw.WriteCloser.Write(b)
+	cw.crc.Write(b[:n])
+	return
+}
+
+func (cw *crcWriteCloser) Sum() []byte {
+	return cw.crc.Sum(nil)
+}
+
+// A byteReader is an io.ByteReader that remembers what bytes it has read.
+type byteReader struct {
+	r io.ByteReader
+	b []byte
+}
+
+func newByteReader(r io.ByteReader) *byteReader {
+	return &byteReader{r, nil}
+}
+
+func (br *byteReader) ReadByte() (byte, error) {
+	c, err := br.r.ReadByte()
+	if err != nil {
+		return 0, err
+	}
+	br.b = append(br.b, c)
+	return c, nil
+}
+
+func (br *byteReader) Bytes() []byte {
+	return br.b
 }
