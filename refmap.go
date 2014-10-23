@@ -120,7 +120,6 @@ func (m *RefMap) Delete(key [20]byte) (ok bool) {
 
 func (m *RefMap) Len() int { return m.len }
 
-// TODO: check this is inlined
 func (m *RefMap) slotIdx(k [20]byte) int {
 	return (int(k[0])<<16 + int(k[1])<<8 + int(k[2])) * m.bucketSize
 }
