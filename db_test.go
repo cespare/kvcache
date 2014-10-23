@@ -15,7 +15,7 @@ import (
 func init() { log.SetOutput(ioutil.Discard) }
 
 func TestDB(t *testing.T) {
-	tempdir, err := ioutil.TempDir(".", "kvcache-test-")
+	tempdir, err := ioutil.TempDir(".", "testdata-")
 	asrt.Equal(t, err, nil)
 	defer os.RemoveAll(tempdir)
 	dir := filepath.Join(tempdir, "db")
