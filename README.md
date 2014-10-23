@@ -5,7 +5,6 @@ kvcache implements a simple key/value datastore for a particular use case:
 - Keys and values are just bytes
 - Keys are small (10-50 bytes) and values are large (kilobytes)
 - Keys and values only need to be accessed for a fixed time window
-- Lookups are very much more frequent for more recent keys than for older keys
 
 General implementation notes:
 
