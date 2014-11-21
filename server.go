@@ -84,23 +84,23 @@ func (s *Server) Start() error {
 	if err != nil {
 		return err
 	}
-	s.statsd.Inc("server-start")
+	s.statsd.Inc("kvcache.server-start")
 	go s.statUpdates()
 	return s.loop(l)
 }
 
 func (s *Server) statUpdates() {
-	ticker := time.NewTicker(5 * time.Second)
+	ticker := time.NewTicker(30 * time.Second)
 	defer ticker.Stop()
 	for {
 		select {
 		case <-ticker.C:
 			stats := s.db.Info()
-			s.statsd.Gauge("db.rchunks", float64(stats.RChunks))
-			s.statsd.Gauge("db.total-rlog-size", float64(stats.TotalRLogSize))
-			s.statsd.Gauge("db.wlog-keys", float64(stats.WLogKeys))
-			s.statsd.Gauge("db.rlog-keys", float64(stats.RLogKeys))
-			s.statsd.Gauge("db.total-keys", float64(stats.TotalKeys))
+			s.statsd.Gauge("kvcache.db.rchunks", float64(stats.RChunks))
+			s.statsd.Gauge("kvcache.db.total-rlog-size", float64(stats.TotalRLogSize))
+			s.statsd.Gauge("kvcache.db.wlog-keys", float64(stats.WLogKeys))
+			s.statsd.Gauge("kvcache.db.rlog-keys", float64(stats.RLogKeys))
+			s.statsd.Gauge("kvcache.db.total-keys", float64(stats.TotalKeys))
 		case <-s.quitStatUpdates:
 			return
 		}
@@ -114,7 +114,7 @@ func (s *Server) loop(l net.Listener) error {
 			if e, ok := err.(net.Error); ok && e.Temporary() {
 				delay := 10 * time.Millisecond
 				log.Printf("Accept error: %s; retrying in %s", e, delay)
-				s.statsd.Inc("errors.accept")
+				s.statsd.Inc("kvcache.errors.accept")
 				time.Sleep(delay)
 				continue
 			}
@@ -140,7 +140,7 @@ func head(q []*Response) *Response {
 
 func (s *Server) HandleConn(c net.Conn) {
 	log.Printf("Client connected from %s", c.RemoteAddr())
-	s.statsd.Inc("client-connect")
+	s.statsd.Inc("kvcache.client-connect")
 
 	// readErr and writeErr are how the request reader and response writer goroutines can notify the other that
 	// the client (or connection) broke/disconnected.
@@ -165,14 +165,14 @@ reqLoop:
 		select {
 		case r := <-requests:
 			if r.Err != nil {
-				s.statsd.Inc("errors.request")
+				s.statsd.Inc("kvcache.errors.request")
 				resp.Msg = []byte(r.Err.Error())
 				resp.Type = RedisErr
 			} else {
-				s.statsd.Inc("requests")
+				s.statsd.Inc("kvcache.requests")
 				switch r.Type {
 				case RequestSet:
-					s.statsd.Inc("requests.set")
+					s.statsd.Inc("kvcache.requests.set")
 					start := time.Now()
 					_, err := s.db.Put(r.Key, r.Val)
 					switch err {
@@ -190,9 +190,9 @@ reqLoop:
 						}
 						resp = ResponseFromError(err)
 					}
-					s.statsd.Time("requests.set", time.Since(start))
+					s.statsd.Time("kvcache.requests.set", time.Since(start))
 				case RequestGet:
-					s.statsd.Inc("requests.get")
+					s.statsd.Inc("kvcache.requests.get")
 					start := time.Now()
 					v, _, err := s.db.Get(r.Key)
 					switch err {
@@ -204,15 +204,15 @@ reqLoop:
 					default:
 						resp = ResponseFromError(err)
 					}
-					s.statsd.Time("requests.get", time.Since(start))
+					s.statsd.Time("kvcache.requests.get", time.Since(start))
 				case RequestPing:
-					s.statsd.Inc("requests.ping")
+					s.statsd.Inc("kvcache.requests.ping")
 					resp.Msg = []byte("PONG")
 				case RequestInfo:
-					s.statsd.Inc("requests.info")
+					s.statsd.Inc("kvcache.requests.info")
 					resp.Msg = []byte(s.db.Info().String())
 				default:
-					s.statsd.Inc("errors.unexpected-request-type")
+					s.statsd.Inc("kvcache.errors.unexpected-request-type")
 					panic("unexpected request type")
 				}
 			}
