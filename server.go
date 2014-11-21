@@ -4,6 +4,7 @@ import (
 	"bufio"
 	"errors"
 	"flag"
+	"fmt"
 	"io"
 	"log"
 	"net"
@@ -228,6 +229,8 @@ var (
 	ErrMalformedRequest    = errors.New("malformed request")
 	ErrUnrecognizedCommand = errors.New("unrecognized command")
 	ErrWrongNumArgs        = errors.New("wrong number of arguments for command")
+	ErrSetXXUnupported     = errors.New("the XX option to SET is not supported")
+	ErrSetNXRequired       = errors.New("the NX option to SET is required")
 )
 
 func (r *Request) Parse(br *bufio.Reader) error {
@@ -238,26 +241,46 @@ func (r *Request) Parse(br *bufio.Reader) error {
 	if len(array) == 0 {
 		return ErrMalformedRequest
 	}
-	switch strings.ToLower(array[0]) {
-	case "set":
-		if len(array) != 3 {
+	switch strings.ToUpper(array[0]) {
+	case "SET":
+		if len(array) < 3 {
 			return ErrWrongNumArgs
 		}
 		r.Type = RequestSet
 		r.Key = []byte(array[1])
 		r.Val = []byte(array[2])
-	case "get":
+		var nx bool
+		// Note permissive redis behavior:
+		// https://github.com/antirez/redis/issues/2157
+		for i := 3; i < len(array); i++ {
+			param := strings.ToUpper(array[i])
+			switch param {
+			case "EX", "PX":
+				if i+1 >= len(array) {
+					return fmt.Errorf("expiry parameter %s provided without a value", param)
+				}
+				i++ // Skip the expiry value
+			case "XX":
+				return ErrSetXXUnupported
+			case "NX":
+				nx = true
+			}
+		}
+		if !nx {
+			return ErrSetNXRequired
+		}
+	case "GET":
 		if len(array) != 2 {
 			return ErrWrongNumArgs
 		}
 		r.Type = RequestGet
 		r.Key = []byte(array[1])
-	case "ping":
+	case "PING":
 		if len(array) != 1 {
 			return ErrWrongNumArgs
 		}
 		r.Type = RequestPing
-	case "info":
+	case "INFO":
 		if len(array) != 1 {
 			return ErrWrongNumArgs
 		}

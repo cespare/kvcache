@@ -51,9 +51,9 @@ func TestServer(t *testing.T) {
 		want string // "nil" means nil response
 	}{
 		{"GET", []interface{}{"foo"}, "nil"},
-		{"SET", []interface{}{"foo", "bar"}, "OK"},
+		{"SET", []interface{}{"foo", "bar", "NX"}, "OK"},
 		{"GET", []interface{}{"foo"}, "bar"},
-		{"SET", []interface{}{"foo", "baz"}, "nil"},
+		{"SET", []interface{}{"foo", "baz", "NX"}, "nil"},
 		{"GET", []interface{}{"foo"}, "bar"},
 	} {
 		reply, err := redis.String(c.Do(testCase.cmd, testCase.args...))
