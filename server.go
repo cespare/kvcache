@@ -20,9 +20,10 @@ import (
 )
 
 type Server struct {
-	addr   string
-	db     *DB
-	statsd *gostc.Client
+	addr            string
+	db              *DB
+	statsd          *gostc.Client
+	quitStatUpdates chan struct{}
 }
 
 func NewServer(dir, addr string, chunkSize uint64, expiry time.Duration, statsdAddr string) (*Server, error) {
@@ -35,9 +36,10 @@ func NewServer(dir, addr string, chunkSize uint64, expiry time.Duration, statsdA
 		return nil, err
 	}
 	return &Server{
-		addr:   addr,
-		db:     db,
-		statsd: statsd,
+		addr:            addr,
+		db:              db,
+		statsd:          statsd,
+		quitStatUpdates: make(chan struct{}),
 	}, nil
 }
 
@@ -72,6 +74,7 @@ type Response struct {
 }
 
 func (s *Server) Stop() error {
+	close(s.quitStatUpdates)
 	s.statsd.Close()
 	return s.db.Close()
 }
@@ -82,7 +85,26 @@ func (s *Server) Start() error {
 		return err
 	}
 	s.statsd.Inc("server-start")
+	go s.statUpdates()
 	return s.loop(l)
+}
+
+func (s *Server) statUpdates() {
+	ticker := time.NewTicker(5 * time.Second)
+	defer ticker.Stop()
+	for {
+		select {
+		case <-ticker.C:
+			stats := s.db.Info()
+			s.statsd.Gauge("db.rchunks", float64(stats.RChunks))
+			s.statsd.Gauge("db.total-rlog-size", float64(stats.TotalRLogSize))
+			s.statsd.Gauge("db.wlog-keys", float64(stats.WLogKeys))
+			s.statsd.Gauge("db.rlog-keys", float64(stats.RLogKeys))
+			s.statsd.Gauge("db.total-keys", float64(stats.TotalKeys))
+		case <-s.quitStatUpdates:
+			return
+		}
+	}
 }
 
 func (s *Server) loop(l net.Listener) error {
@@ -188,7 +210,7 @@ reqLoop:
 					resp.Msg = []byte("PONG")
 				case RequestInfo:
 					s.statsd.Inc("requests.info")
-					resp.Msg = s.db.Info()
+					resp.Msg = []byte(s.db.Info().String())
 				default:
 					s.statsd.Inc("errors.unexpected-request-type")
 					panic("unexpected request type")

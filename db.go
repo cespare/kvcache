@@ -135,21 +135,39 @@ func OpenDB(chunkSize uint64, expiry time.Duration, dir string) (*DB, error) {
 	return db, nil
 }
 
-func (db *DB) Info() []byte {
+type DBStats struct {
+	RChunks       int
+	TotalRLogSize uint64
+	WLogKeys      int
+	RLogKeys      int
+	TotalKeys     int
+}
+
+func (s DBStats) String() string {
+	var buf bytes.Buffer
+	fmt.Fprintf(&buf, "Read chunks: %d\n", s.RChunks)
+	fmt.Fprintf(&buf, "Total read log size: %d\n", s.TotalRLogSize)
+	fmt.Fprintf(&buf, "Keys in write log: %d\n", s.WLogKeys)
+	fmt.Fprintf(&buf, "Keys in read log: %d\n", s.RLogKeys)
+	fmt.Fprintf(&buf, "Total keys: %d\n", s.TotalKeys)
+	return buf.String()
+}
+
+func (db *DB) Info() DBStats {
 	db.mu.Lock()
 	defer db.mu.Unlock()
 
-	var buf bytes.Buffer
 	var totalSize uint64
 	for _, rchunk := range db.rchunks {
 		totalSize += uint64(len(rchunk.b))
 	}
-	fmt.Fprintf(&buf, "Read chunks: %d\n", len(db.rchunks))
-	fmt.Fprintf(&buf, "Total read log size: %d\n", totalSize)
-	fmt.Fprintf(&buf, "Keys in write log: %d\n", len(db.memCache))
-	fmt.Fprintf(&buf, "Keys in read log: %d\n", db.refCache.Len())
-	fmt.Fprintf(&buf, "Total keys: %d\n", len(db.memCache)+db.refCache.Len())
-	return buf.Bytes()
+	return DBStats{
+		RChunks:       len(db.rchunks),
+		TotalRLogSize: totalSize,
+		WLogKeys:      len(db.memCache),
+		RLogKeys:      db.refCache.Len(),
+		TotalKeys:     len(db.memCache) + db.refCache.Len(),
+	}
 }
 
 var (
