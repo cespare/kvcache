@@ -11,7 +11,7 @@ import (
 	"math"
 	"os"
 
-	"code.google.com/p/snappy-go/snappy"
+	"github.com/cespare/snappy"
 )
 
 // This file implements a rotating, append-only log of expiring key/val pairs.

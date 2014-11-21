@@ -15,7 +15,7 @@ import (
 	"syscall"
 	"time"
 
-	"code.google.com/p/snappy-go/snappy"
+	"github.com/cespare/snappy"
 )
 
 type Record struct {
