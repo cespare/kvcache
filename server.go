@@ -16,6 +16,7 @@ import (
 	"time"
 
 	"github.com/cespare/gostc"
+	"github.com/dustin/go-humanize"
 )
 
 type Server struct {
@@ -343,14 +344,19 @@ func main() {
 	var (
 		addr       = flag.String("addr", "localhost:5533", "Listen addr")
 		dir        = flag.String("dir", "db", "DB directory")
-		chunkSize  = flag.Uint64("chunksize", 100e6, "Max size for chunks")
+		chunkSize  = flag.String("chunksize", "100MB", "Max size for chunks")
 		expiry     = flag.Duration("expiry", time.Hour, "How long data persists before expiring")
 		statsdAddr = flag.String("statsdaddr", "localhost:8125", "Address to send UDP StatsD metrics")
 	)
 	flag.Parse()
 
-	log.Println("Now listening on", *addr)
-	server, err := NewServer(*dir, *addr, *chunkSize, *expiry, *statsdAddr)
+	chunkSizeBytes, err := humanize.ParseBytes(*chunkSize)
+	if err != nil {
+		log.Fatalf("Bad -chunksize %q: %s", *chunkSize, err)
+	}
+
+	log.Printf("Now listening on %s (dir=%s; chunksize=%d; expiry=%s)", *addr, *dir, chunkSizeBytes, *expiry)
+	server, err := NewServer(*dir, *addr, chunkSizeBytes, *expiry, *statsdAddr)
 	if err != nil {
 		log.Fatal(err)
 	}
