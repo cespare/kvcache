@@ -134,7 +134,13 @@ reqLoop:
 			} else {
 				switch r.Type {
 				case RequestSet:
-					if _, err := s.db.Put(r.Key, r.Val); err != nil {
+					_, err := s.db.Put(r.Key, r.Val)
+					switch err {
+					case nil:
+						resp.Msg = []byte("OK")
+					case ErrKeyExist:
+						resp.Type = RedisBulk // null
+					default:
 						if e, ok := err.(FatalDBError); ok {
 							log.Println("Fatal DB error:", e)
 							if err := s.Stop(); err != nil {
@@ -143,9 +149,7 @@ reqLoop:
 							os.Exit(1)
 						}
 						resp = ResponseFromError(err)
-						break
 					}
-					resp.Msg = []byte("OK")
 				case RequestGet:
 					v, _, err := s.db.Get(r.Key)
 					switch err {
@@ -153,8 +157,7 @@ reqLoop:
 						resp.Type = RedisBulk
 						resp.Msg = v
 					case ErrKeyNotExist:
-						// Redis null val
-						resp.Type = RedisBulk
+						resp.Type = RedisBulk // null
 					default:
 						resp = ResponseFromError(err)
 					}
