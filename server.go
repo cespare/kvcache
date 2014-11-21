@@ -14,21 +14,29 @@ import (
 	"strings"
 	"syscall"
 	"time"
+
+	"github.com/cespare/gostc"
 )
 
 type Server struct {
-	addr string
-	db   *DB
+	addr   string
+	db     *DB
+	statsd *gostc.Client
 }
 
-func NewServer(dir, addr string, chunkSize uint64, expiry time.Duration) (*Server, error) {
+func NewServer(dir, addr string, chunkSize uint64, expiry time.Duration, statsdAddr string) (*Server, error) {
 	db, err := OpenDB(chunkSize, expiry, dir)
 	if err != nil {
 		return nil, err
 	}
+	statsd, err := gostc.NewClient(statsdAddr)
+	if err != nil {
+		return nil, err
+	}
 	return &Server{
-		addr: addr,
-		db:   db,
+		addr:   addr,
+		db:     db,
+		statsd: statsd,
 	}, nil
 }
 
@@ -63,6 +71,7 @@ type Response struct {
 }
 
 func (s *Server) Stop() error {
+	s.statsd.Close()
 	return s.db.Close()
 }
 
@@ -71,6 +80,7 @@ func (s *Server) Start() error {
 	if err != nil {
 		return err
 	}
+	s.statsd.Inc("server-start")
 	return s.loop(l)
 }
 
@@ -81,6 +91,7 @@ func (s *Server) loop(l net.Listener) error {
 			if e, ok := err.(net.Error); ok && e.Temporary() {
 				delay := 10 * time.Millisecond
 				log.Printf("Accept error: %s; retrying in %s", e, delay)
+				s.statsd.Inc("errors.accept")
 				time.Sleep(delay)
 				continue
 			}
@@ -106,6 +117,7 @@ func head(q []*Response) *Response {
 
 func (s *Server) HandleConn(c net.Conn) {
 	log.Printf("Client connected from %s", c.RemoteAddr())
+	s.statsd.Inc("client-connect")
 
 	// readErr and writeErr are how the request reader and response writer goroutines can notify the other that
 	// the client (or connection) broke/disconnected.
@@ -130,11 +142,15 @@ reqLoop:
 		select {
 		case r := <-requests:
 			if r.Err != nil {
+				s.statsd.Inc("errors.request")
 				resp.Msg = []byte(r.Err.Error())
 				resp.Type = RedisErr
 			} else {
+				s.statsd.Inc("requests")
 				switch r.Type {
 				case RequestSet:
+					s.statsd.Inc("requests.set")
+					start := time.Now()
 					_, err := s.db.Put(r.Key, r.Val)
 					switch err {
 					case nil:
@@ -151,7 +167,10 @@ reqLoop:
 						}
 						resp = ResponseFromError(err)
 					}
+					s.statsd.Time("requests.set", time.Since(start))
 				case RequestGet:
+					s.statsd.Inc("requests.get")
+					start := time.Now()
 					v, _, err := s.db.Get(r.Key)
 					switch err {
 					case nil:
@@ -162,11 +181,15 @@ reqLoop:
 					default:
 						resp = ResponseFromError(err)
 					}
+					s.statsd.Time("requests.get", time.Since(start))
 				case RequestPing:
+					s.statsd.Inc("requests.ping")
 					resp.Msg = []byte("PONG")
 				case RequestInfo:
+					s.statsd.Inc("requests.info")
 					resp.Msg = s.db.Info()
 				default:
+					s.statsd.Inc("errors.unexpected-request-type")
 					panic("unexpected request type")
 				}
 			}
@@ -318,15 +341,16 @@ func (r *Response) Write(w io.Writer) error {
 
 func main() {
 	var (
-		addr      = flag.String("addr", "localhost:5533", "Listen addr")
-		dir       = flag.String("dir", "db", "DB directory")
-		chunkSize = flag.Uint64("chunksize", 100e6, "Max size for chunks")
-		expiry    = flag.Duration("expiry", time.Hour, "How long data persists before expiring")
+		addr       = flag.String("addr", "localhost:5533", "Listen addr")
+		dir        = flag.String("dir", "db", "DB directory")
+		chunkSize  = flag.Uint64("chunksize", 100e6, "Max size for chunks")
+		expiry     = flag.Duration("expiry", time.Hour, "How long data persists before expiring")
+		statsdAddr = flag.String("statsdaddr", "localhost:8125", "Address to send UDP StatsD metrics")
 	)
 	flag.Parse()
 
 	log.Println("Now listening on", *addr)
-	server, err := NewServer(*dir, *addr, *chunkSize, *expiry)
+	server, err := NewServer(*dir, *addr, *chunkSize, *expiry, *statsdAddr)
 	if err != nil {
 		log.Fatal(err)
 	}
