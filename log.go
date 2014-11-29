@@ -334,6 +334,10 @@ func (rl *ReadLog) ReadRecord(offset uint32) (*Record, error) {
 	if err != nil {
 		return nil, err
 	}
+	// []byte{} is encoded as the single 0 byte, which decodes as nil. Special-case.
+	if val == nil {
+		val = []byte{}
+	}
 
 	return &Record{
 		t:   t,
