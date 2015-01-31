@@ -241,11 +241,10 @@ func (s *Server) readRequests(c net.Conn, requests chan<- *Request, readErr, wri
 			}
 			r.Err = err
 		}
-		requests <- &r
 		select {
+		case requests <- &r:
 		case <-writeErr:
 			return
-		default:
 		}
 	}
 }
