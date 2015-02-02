@@ -1,5 +1,14 @@
 package main
 
+// TODO(caleb): The purpose of implementing this hashmap ourselves
+// is to avoid large GC pauses from large maps.
+// See https://github.com/golang/go/issues/9477 for more info.
+// Dmitry Vyukov has submitted a change that lets the collector avoid
+// scanning map types that don't have pointers:
+// https://github.com/golang/go/commit/85e7bee19f9f26dfca414b1e9054e429c448b14f
+// This change should make it into Go 1.5. When that happens,
+// remove RefMap and replace it with a map[[20]byte]RecordRef.
+
 const (
 	// bucketBytes is the number of bytes of the key used to determine the hash bucket.
 	// If we wanted to dynamically scale through many different orders of magnitude,
@@ -14,7 +23,7 @@ const (
 	maxLoadFactor     = 0.65
 )
 
-type RefMapEntry struct {
+type refMapEntry struct {
 	occ bool
 	key [20]byte
 	val RecordRef
@@ -25,7 +34,7 @@ type RefMapEntry struct {
 // It is resized when the the load factor grows too high.
 // Using this instead of a Go map type avoids GC penalties from using very large maps.
 type RefMap struct {
-	slots      []RefMapEntry
+	slots      []refMapEntry
 	bucketSize int
 	len        int
 	cap        int
@@ -34,7 +43,7 @@ type RefMap struct {
 func newRefMap(bucketSize int) *RefMap {
 	n := numBuckets * bucketSize
 	return &RefMap{
-		slots:      make([]RefMapEntry, n),
+		slots:      make([]refMapEntry, n),
 		bucketSize: bucketSize,
 		cap:        n,
 	}
@@ -48,7 +57,7 @@ func (m *RefMap) Put(key [20]byte, val RecordRef) (exists bool) {
 	for i := m.slotIdx(key); ; i = (i + 1) % m.cap {
 		if !m.slots[i].occ {
 			// We've found an empty slot to put this entry.
-			m.slots[i] = RefMapEntry{
+			m.slots[i] = refMapEntry{
 				occ: true,
 				key: key,
 				val: val,
@@ -87,10 +96,13 @@ func (m *RefMap) Delete(key [20]byte) (ok bool) {
 			break
 		}
 	}
-	// We've found our entry: it is at i. When we remove it, there's going to be a gap in the table which could
-	// break the probing invariant: for a key k in the hash table, there are no unoccupied slots between k's
-	// initial slot index and the location where k resides.
-	// So, we'll iterate forwards through the table, moving items into the unoccupied slot when we can.
+	// We've found our entry: it is at i.
+	// When we remove it, there's going to be a gap in the table which could break the probing invariant:
+	//
+	//   for each key k in the hash table, there are no unoccupied slots between k's initial slot index
+	//   and the location where k resides.
+	//
+	// So we'll iterate forwards through the table, moving items into the unoccupied slot when we can.
 	// See pseudocode at http://en.wikipedia.org/wiki/Open_addressing
 	j := i
 	for {
