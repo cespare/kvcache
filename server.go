@@ -26,8 +26,8 @@ type Server struct {
 	quitStatUpdates chan struct{}
 }
 
-func NewServer(dir, addr string, chunkSize uint64, expiry time.Duration, statsdAddr string) (*Server, error) {
-	db, err := OpenDB(chunkSize, expiry, dir)
+func NewServer(dir, addr string, chunkSize uint64, expiry time.Duration, statsdAddr string, removeCorrupt bool) (*Server, error) {
+	db, err := OpenDB(chunkSize, expiry, dir, removeCorrupt)
 	if err != nil {
 		return nil, err
 	}
@@ -363,11 +363,12 @@ func (r *Response) Write(w io.Writer) error {
 
 func main() {
 	var (
-		addr       = flag.String("addr", "localhost:5533", "Listen addr")
-		dir        = flag.String("dir", "db", "DB directory")
-		chunkSize  = flag.String("chunksize", "100MB", "Max size for chunks")
-		expiry     = flag.Duration("expiry", time.Hour, "How long data persists before expiring")
-		statsdAddr = flag.String("statsdaddr", "localhost:8125", "Address to send UDP StatsD metrics")
+		addr          = flag.String("addr", "localhost:5533", "Listen addr")
+		dir           = flag.String("dir", "db", "DB directory")
+		chunkSize     = flag.String("chunksize", "100MB", "Max size for chunks")
+		expiry        = flag.Duration("expiry", time.Hour, "How long data persists before expiring")
+		statsdAddr    = flag.String("statsdaddr", "localhost:8125", "Address to send UDP StatsD metrics")
+		removeCorrupt = flag.Bool("removecorrupt", false, "Whether to skip+delete corrupt chunks on load")
 	)
 	flag.Parse()
 
@@ -377,9 +378,9 @@ func main() {
 	}
 
 	log.Printf("Now listening on %s (dir=%s; chunksize=%d; expiry=%s)", *addr, *dir, chunkSizeBytes, *expiry)
-	server, err := NewServer(*dir, *addr, chunkSizeBytes, *expiry, *statsdAddr)
+	server, err := NewServer(*dir, *addr, chunkSizeBytes, *expiry, *statsdAddr, *removeCorrupt)
 	if err != nil {
-		log.Fatal(err)
+		log.Fatalf("Fatal error opening DB at %s: %v", *dir, err)
 	}
 
 	c := make(chan os.Signal, 1)

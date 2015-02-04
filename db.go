@@ -10,12 +10,14 @@ import (
 	"math"
 	"os"
 	"path/filepath"
+	"sort"
 	"strings"
 	"sync"
 	"syscall"
 	"time"
 
 	"github.com/cespare/snappy"
+	"github.com/cespare/wait"
 )
 
 type Record struct {
@@ -52,9 +54,9 @@ type DB struct {
 	mu *sync.Mutex // Protects all of the following
 
 	// Chunk files
-	seq     uint32 // Current base sequence # for wchunk; seq+i+1 is the sequence # for an rchunk
+	seq     uint32 // Current base sequence # for wchunk
 	wchunk  *WriteChunk
-	rchunks []*ReadChunk
+	rchunks map[uint32]*ReadChunk
 
 	memCache map[keyHash]Record // entries in wchunk are cached directly
 	refCache *RefMap
@@ -76,6 +78,7 @@ func newDB(chunkSize uint64, expiry time.Duration, dir string) (*DB, error) {
 		since: time.Since,
 
 		mu:       new(sync.Mutex),
+		rchunks:  make(map[uint32]*ReadChunk),
 		memCache: make(map[keyHash]Record),
 		refCache: NewRefMap(),
 	}, nil
@@ -107,7 +110,7 @@ func NewDB(chunkSize uint64, expiry time.Duration, dir string) (*DB, error) {
 }
 
 // OpenDB opens an existing DB, or else creates a new DB if dir does not exist.
-func OpenDB(chunkSize uint64, expiry time.Duration, dir string) (*DB, error) {
+func OpenDB(chunkSize uint64, expiry time.Duration, dir string, removeCorrupt bool) (*DB, error) {
 	db, err := NewDB(chunkSize, expiry, dir)
 	switch err {
 	case ErrDBDirExists:
@@ -123,7 +126,7 @@ func OpenDB(chunkSize uint64, expiry time.Duration, dir string) (*DB, error) {
 	if err := db.addFlock(); err != nil {
 		return nil, err
 	}
-	if err := db.loadReadChunks(dir); err != nil {
+	if err := db.loadReadChunks(dir, removeCorrupt); err != nil {
 		return nil, err
 	}
 
@@ -192,7 +195,7 @@ func (db *DB) Get(k []byte) (v []byte, cached bool, err error) {
 		return r.val, true, nil
 	}
 	if ref, ok := db.refCache.Get(hash); ok {
-		rchunk := db.rchunkForSeq(ref.seq)
+		rchunk := db.rchunks[ref.seq]
 		r, err := rchunk.ReadRecord(ref.offset)
 		if err != nil {
 			return nil, false, err
@@ -214,10 +217,12 @@ func (e FatalDBError) Error() string { return e.error.Error() }
 var ErrValTooLong = errors.New("value is too long")
 
 func (db *DB) Put(k, v []byte) (rotated bool, err error) {
-	hash := sha1.Sum(k)
 	if len(v) > maxValLen {
 		return false, ErrValTooLong
 	}
+
+	// compute as much as we can outside the lock
+	hash := sha1.Sum(k)
 	snappyVal := SnappyEncode(v)
 
 	db.mu.Lock()
@@ -316,7 +321,7 @@ func (db *DB) Rotate() error {
 	if err != nil {
 		return err
 	}
-	db.rchunks = append([]*ReadChunk{rchunk}, db.rchunks...)
+	db.rchunks[db.seq-1] = rchunk
 	db.wchunk = wchunk
 
 	if err := db.removeExpiredChunks(); err != nil {
@@ -330,8 +335,14 @@ func (db *DB) Rotate() error {
 }
 
 func (db *DB) removeExpiredChunks() error {
-	for i := len(db.rchunks) - 1; i >= 0; i-- {
-		rchunk := db.rchunks[i]
+	var seqs []uint32
+	for seq := range db.rchunks {
+		seqs = append(seqs, seq)
+	}
+	sort.Sort(uint32s(seqs))
+
+	for _, seq := range seqs {
+		rchunk := db.rchunks[seq]
 		// Check whether this whole chunk is expired by looking at the most recent timestamp.
 		if db.since(time.Unix(0, rchunk.lastTimestamp)) <= db.expiry {
 			break
@@ -345,7 +356,7 @@ func (db *DB) removeExpiredChunks() error {
 				return err
 			}
 		}
-		db.rchunks = db.rchunks[:i]
+		delete(db.rchunks, seq)
 		// Remove the refCache entries
 		for _, entry := range rchunk.index {
 			db.refCache.Delete(entry.hash)
@@ -358,10 +369,6 @@ const chunkFormat = "chunk%010d"
 
 func (db *DB) logName(seq uint32) string {
 	return filepath.Join(db.dir, fmt.Sprintf(chunkFormat, seq))
-}
-
-func (db *DB) rchunkForSeq(seq uint32) *ReadChunk {
-	return db.rchunks[int(db.seq-seq-1)]
 }
 
 func (db *DB) addFlock() error {
@@ -381,104 +388,118 @@ func (db *DB) removeFlock() error {
 	return syscall.Flock(int(db.dirFile.Fd()), syscall.LOCK_UN)
 }
 
-func (db *DB) loadReadChunks(dir string) error {
+// loadReadChunks loads DB chunks (pairs of .log/.idx files) from dir.
+// A non-nil error is returned if the files are mismatched.
+// If there is a corrupt chunk, then it is removed or an error is returned,
+// depending on removeCorrupt.
+func (db *DB) loadReadChunks(dir string, removeCorrupt bool) error {
 	start := time.Now()
 	seqs, err := findDBFiles(dir)
 	if err != nil {
 		return err
 	}
-	if len(seqs) > 0 {
-		db.seq = seqs[len(seqs)-1] + 1
-	}
-	log.Printf("Found %d existing chunks; next seq=%d", len(seqs), db.seq)
-
-	type task struct {
-		i      int
-		seq    uint32
-		index  []IndexEntry
-		rchunk *ReadChunk
-	}
+	log.Printf("Found %d existing chunks", len(seqs))
 
 	// Parse and load the read chunks in parallel -- it's fairly CPU-intensive.
-	// TODO: this fan-out fan-in logic can definitely be simplified.
-	inputc := make(chan *task)
-	outputc := make(chan *task)
-	errc := make(chan error)
-	var wg sync.WaitGroup
-	go func() {
-		for i, seq := range seqs {
-			inputc <- &task{
-				i:   i,
-				seq: seq,
+	inputc := make(chan *loadChunkTask)
+	outputc := make(chan *loadChunkTask)
+	var wg wait.Group
+	wg.Go(func(quit <-chan struct{}) error {
+		defer close(inputc)
+		for _, seq := range seqs {
+			select {
+			case inputc <- &loadChunkTask{seq: seq}:
+			case <-quit:
+				return nil
 			}
 		}
-		close(inputc)
-	}()
-	const procs = 32
-	wg.Add(procs)
-	for i := 0; i < procs; i++ {
-		go func() {
-			defer wg.Done()
-			for task := range inputc {
-				index, rchunk, err := LoadReadChunk(db.logName(task.seq))
-				if err != nil {
-					errc <- err
-					return
-				}
-				task.index = index
-				task.rchunk = rchunk
-				outputc <- task
-			}
-		}()
+		return nil
+	})
+	// Spin up a bunch of workers to load the chunks.
+	for i := 0; i < 32; i++ {
+		wg.Go(db.makeLoadChunkWorker(outputc, inputc, removeCorrupt))
 	}
-	done := make(chan struct{})
+	done := make(chan error)
 	go func() {
-		wg.Wait()
-		close(done)
+		done <- wg.Wait()
 	}()
-	db.rchunks = make([]*ReadChunk, len(seqs))
 aggregate:
 	for {
 		select {
-		case err := <-errc:
-			go func() {
-				// Drain chans to free up goroutines
-				for _ = range inputc {
-				}
-				for _ = range outputc {
-				}
-				for _ = range errc {
-				}
-			}()
-			return err
+		case err := <-done:
+			if err != nil {
+				return err
+			}
+			break aggregate
 		case task := <-outputc:
+			if task.seq >= db.seq {
+				db.seq = task.seq + 1
+			}
 			for _, entry := range task.index {
 				db.refCache.Put(entry.hash, RecordRef{
 					seq:    task.seq,
 					offset: entry.offset,
 				})
 			}
-			// The chunks are stored in reverse order, with the highest-numbered (most recent) chunk at the front.
-			db.rchunks[len(seqs)-task.i-1] = task.rchunk
+			db.rchunks[task.seq] = task.rchunk
 			log.Printf("Loaded chunk %d", task.seq)
-		case <-done:
-			break aggregate
 		}
 	}
-
-	log.Printf("Finished loading DB; loaded %d chunks in %.3fs",
-		len(seqs), time.Since(start).Seconds())
+	log.Printf("Next sequence number: %d", db.seq)
+	log.Printf("Finished loading DB; loaded %d chunks in %.3fs", len(seqs), time.Since(start).Seconds())
 	return nil
+}
+
+type loadChunkTask struct {
+	seq    uint32
+	index  []IndexEntry
+	rchunk *ReadChunk
+}
+
+func (db *DB) makeLoadChunkWorker(outputc, inputc chan *loadChunkTask, removeCorrupt bool) func(<-chan struct{}) error {
+	return func(quit <-chan struct{}) error {
+		for {
+			select {
+			case task, ok := <-inputc:
+				if !ok {
+					return nil
+				}
+				logName := db.logName(task.seq)
+				index, rchunk, err := LoadReadChunk(logName)
+				if err != nil {
+					log.Printf("Found corrupt chunk %d", task.seq)
+					if !removeCorrupt {
+						return err
+					}
+					for _, filename := range []string{logName + ".idx", logName + ".log"} {
+						log.Printf("Removing file %s from corrupt chunk %d", filename, task.seq)
+						if err := os.Remove(filename); err != nil {
+							return err
+						}
+					}
+					break
+				}
+				task.index = index
+				task.rchunk = rchunk
+				select {
+				case outputc <- task:
+				case <-quit:
+					return nil
+				}
+			case <-quit:
+				return nil
+			}
+		}
+	}
 }
 
 var (
 	ErrDBFilesMismatch = errors.New("DB index/log files do not match")
-	ErrBadIdxFilename  = errors.New("DB index file (.idx) has an invalid name.")
-	ErrBadLogFilename  = errors.New("DB log file (.log) has an invalid name.")
+	ErrBadIdxFilename  = errors.New("DB index file (.idx) has an invalid name")
+	ErrBadLogFilename  = errors.New("DB log file (.log) has an invalid name")
 )
 
-// findDBFiles discovers and sanity-checks the DB files in dir.
-// Index and log files must be paired. There cannot be holes in the sequence.
+// findDBFiles discovers the DB files in dir. Index and log files must be paired.
 // Sequence numbers are returned in sorted order.
 func findDBFiles(dir string) (seqs []uint32, err error) {
 	var idxFiles []string
@@ -500,11 +521,6 @@ func findDBFiles(dir string) (seqs []uint32, err error) {
 		seq, err := seqFromBasename(basename)
 		if err != nil {
 			return nil, ErrBadIdxFilename
-		}
-		if i > 0 {
-			if seq != seqs[i-1]+1 {
-				return nil, fmt.Errorf("Invalid DB files: skip from seq %d to %d", seqs[i-1], seq)
-			}
 		}
 		if logFiles[i] != basename+".log" {
 			return nil, ErrDBFilesMismatch
@@ -542,3 +558,9 @@ func SnappyEncode(b []byte) []byte {
 	}
 	return enc
 }
+
+type uint32s []uint32
+
+func (s uint32s) Len() int           { return len(s) }
+func (s uint32s) Less(i, j int) bool { return s[i] < s[j] }
+func (s uint32s) Swap(i, j int)      { s[i], s[j] = s[j], s[i] }
