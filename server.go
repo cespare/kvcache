@@ -27,14 +27,15 @@ type Server struct {
 }
 
 func NewServer(dir, addr string, chunkSize uint64, expiry time.Duration, statsdAddr string, removeCorrupt bool) (*Server, error) {
-	db, err := OpenDB(chunkSize, expiry, dir, removeCorrupt)
-	if err != nil {
-		return nil, err
-	}
 	statsd, err := gostc.NewClient(statsdAddr)
 	if err != nil {
 		return nil, err
 	}
+	db, removedChunks, err := OpenDB(chunkSize, expiry, dir, removeCorrupt)
+	if err != nil {
+		return nil, err
+	}
+	statsd.Count("kvcache.corrupt-removed-chunks", float64(removedChunks), 1.0)
 	return &Server{
 		addr:            addr,
 		db:              db,

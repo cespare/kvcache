@@ -13,6 +13,7 @@ import (
 	"sort"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"syscall"
 	"time"
 
@@ -110,32 +111,33 @@ func NewDB(chunkSize uint64, expiry time.Duration, dir string) (*DB, error) {
 }
 
 // OpenDB opens an existing DB, or else creates a new DB if dir does not exist.
-func OpenDB(chunkSize uint64, expiry time.Duration, dir string, removeCorrupt bool) (*DB, error) {
-	db, err := NewDB(chunkSize, expiry, dir)
+func OpenDB(chunkSize uint64, expiry time.Duration, dir string, removeCorrupt bool) (db *DB, removedChunks int64, err error) {
+	db, err = NewDB(chunkSize, expiry, dir)
 	switch err {
 	case ErrDBDirExists:
 	case nil:
-		return db, err
+		return db, removedChunks, err
 	default:
-		return nil, err
+		return nil, removedChunks, err
 	}
 	db, err = newDB(chunkSize, expiry, dir)
 	if err != nil {
-		return nil, err
+		return nil, removedChunks, err
 	}
 	if err := db.addFlock(); err != nil {
-		return nil, err
+		return nil, removedChunks, err
 	}
-	if err := db.loadReadChunks(dir, removeCorrupt); err != nil {
-		return nil, err
+	removedChunks, err = db.loadReadChunks(dir, removeCorrupt)
+	if err != nil {
+		return nil, removedChunks, err
 	}
 
 	wchunk, err := NewWriteChunk(db.logName(db.seq), db.chunkSize)
 	if err != nil {
-		return nil, err
+		return nil, removedChunks, err
 	}
 	db.wchunk = wchunk
-	return db, nil
+	return db, removedChunks, nil
 }
 
 type DBStats struct {
@@ -392,11 +394,11 @@ func (db *DB) removeFlock() error {
 // A non-nil error is returned if the files are mismatched.
 // If there is a corrupt chunk, then it is removed or an error is returned,
 // depending on removeCorrupt.
-func (db *DB) loadReadChunks(dir string, removeCorrupt bool) error {
+func (db *DB) loadReadChunks(dir string, removeCorrupt bool) (removedChunks int64, err error) {
 	start := time.Now()
 	seqs, err := findDBFiles(dir)
 	if err != nil {
-		return err
+		return removedChunks, err
 	}
 	log.Printf("Found %d existing chunks", len(seqs))
 
@@ -417,7 +419,7 @@ func (db *DB) loadReadChunks(dir string, removeCorrupt bool) error {
 	})
 	// Spin up a bunch of workers to load the chunks.
 	for i := 0; i < 32; i++ {
-		wg.Go(db.makeLoadChunkWorker(outputc, inputc, removeCorrupt))
+		wg.Go(db.makeLoadChunkWorker(outputc, inputc, removeCorrupt, &removedChunks))
 	}
 	done := make(chan error)
 	go func() {
@@ -428,7 +430,7 @@ aggregate:
 		select {
 		case err := <-done:
 			if err != nil {
-				return err
+				return removedChunks, err
 			}
 			break aggregate
 		case task := <-outputc:
@@ -447,7 +449,7 @@ aggregate:
 	}
 	log.Printf("Next sequence number: %d", db.seq)
 	log.Printf("Finished loading DB; loaded %d chunks in %.3fs", len(seqs), time.Since(start).Seconds())
-	return nil
+	return removedChunks, nil
 }
 
 type loadChunkTask struct {
@@ -456,7 +458,7 @@ type loadChunkTask struct {
 	rchunk *ReadChunk
 }
 
-func (db *DB) makeLoadChunkWorker(outputc, inputc chan *loadChunkTask, removeCorrupt bool) func(<-chan struct{}) error {
+func (db *DB) makeLoadChunkWorker(outputc, inputc chan *loadChunkTask, removeCorrupt bool, removedChunks *int64) func(<-chan struct{}) error {
 	return func(quit <-chan struct{}) error {
 		for {
 			select {
@@ -471,6 +473,7 @@ func (db *DB) makeLoadChunkWorker(outputc, inputc chan *loadChunkTask, removeCor
 					if !removeCorrupt {
 						return err
 					}
+					atomic.AddInt64(removedChunks, 1)
 					for _, filename := range []string{logName + ".idx", logName + ".log"} {
 						log.Printf("Removing file %s from corrupt chunk %d", filename, task.seq)
 						if err := os.Remove(filename); err != nil {
