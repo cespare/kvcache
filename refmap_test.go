@@ -5,7 +5,7 @@ import (
 	"strconv"
 	"testing"
 
-	"github.com/cespare/asrt"
+	"github.com/cespare/kvcache/internal/github.com/cespare/asrt"
 )
 
 func TestRefMap(t *testing.T) {

@@ -4,7 +4,7 @@ import (
 	"os"
 	"strings"
 
-	"github.com/edsrzf/mmap-go"
+	"github.com/cespare/kvcache/internal/github.com/edsrzf/mmap-go"
 )
 
 type IndexEntry struct {

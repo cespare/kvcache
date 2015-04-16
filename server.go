@@ -15,8 +15,8 @@ import (
 	"syscall"
 	"time"
 
-	"github.com/cespare/gostc"
-	"github.com/dustin/go-humanize"
+	"github.com/cespare/kvcache/internal/github.com/cespare/gostc"
+	"github.com/cespare/kvcache/internal/github.com/dustin/go-humanize"
 )
 
 type Server struct {

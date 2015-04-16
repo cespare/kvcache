@@ -11,7 +11,7 @@ import (
 	"math"
 	"os"
 
-	"github.com/cespare/snappy"
+	"github.com/cespare/kvcache/internal/github.com/cespare/snappy"
 )
 
 // This file implements a rotating, append-only log of expiring key/val pairs.

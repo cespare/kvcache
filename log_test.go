@@ -7,7 +7,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/cespare/asrt"
+	"github.com/cespare/kvcache/internal/github.com/cespare/asrt"
 )
 
 const (

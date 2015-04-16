@@ -17,8 +17,8 @@ import (
 	"syscall"
 	"time"
 
-	"github.com/cespare/snappy"
-	"github.com/cespare/wait"
+	"github.com/cespare/kvcache/internal/github.com/cespare/snappy"
+	"github.com/cespare/kvcache/internal/github.com/cespare/wait"
 )
 
 type Record struct {
