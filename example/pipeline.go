@@ -4,7 +4,7 @@ import (
 	"fmt"
 	"log"
 
-	"github.com/garyburd/redigo/redis"
+	"github.com/cespare/kvcache/internal/github.com/garyburd/redigo/redis"
 )
 
 func main() {

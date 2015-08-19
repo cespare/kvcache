@@ -6,7 +6,7 @@ import (
 	"math/rand"
 	"time"
 
-	"github.com/garyburd/redigo/redis"
+	"github.com/cespare/kvcache/internal/github.com/garyburd/redigo/redis"
 )
 
 // Simple benchmark test. Generate random keys/vals and insert into the DB. For some % of these, wait for some
