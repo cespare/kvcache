@@ -60,7 +60,7 @@ type DB struct {
 	rchunks map[uint32]*ReadChunk
 
 	memCache map[keyHash]Record // entries in wchunk are cached directly
-	refCache *RefMap
+	refCache map[keyHash]RecordRef
 
 	closed  bool
 	dirFile *os.File // Handle for flocking the DB
@@ -81,7 +81,7 @@ func newDB(chunkSize uint64, expiry time.Duration, dir string) (*DB, error) {
 		mu:       new(sync.Mutex),
 		rchunks:  make(map[uint32]*ReadChunk),
 		memCache: make(map[keyHash]Record),
-		refCache: NewRefMap(),
+		refCache: make(map[keyHash]RecordRef),
 	}, nil
 }
 
@@ -170,8 +170,8 @@ func (db *DB) Info() DBStats {
 		RChunks:       len(db.rchunks),
 		TotalRLogSize: totalSize,
 		WLogKeys:      len(db.memCache),
-		RLogKeys:      db.refCache.Len(),
-		TotalKeys:     len(db.memCache) + db.refCache.Len(),
+		RLogKeys:      len(db.refCache),
+		TotalKeys:     len(db.memCache) + len(db.refCache),
 	}
 }
 
@@ -196,7 +196,7 @@ func (db *DB) Get(k []byte) (v []byte, cached bool, err error) {
 		}
 		return r.val, true, nil
 	}
-	if ref, ok := db.refCache.Get(hash); ok {
+	if ref, ok := db.refCache[hash]; ok {
 		rchunk := db.rchunks[ref.seq]
 		r, err := rchunk.ReadRecord(ref.offset)
 		if err != nil {
@@ -236,7 +236,7 @@ func (db *DB) Put(k, v []byte) (rotated bool, err error) {
 	if _, ok := db.memCache[hash]; ok {
 		return rotated, ErrKeyExist
 	}
-	if _, ok := db.refCache.Get(hash); ok {
+	if _, ok := db.refCache[hash]; ok {
 		return rotated, ErrKeyExist
 	}
 
@@ -271,7 +271,7 @@ func (db *DB) Put(k, v []byte) (rotated bool, err error) {
 		return rotated, err
 	}
 	db.memCache[hash] = r
-	db.refCache.Put(hash, RecordRef{seq: db.seq, offset: offset})
+	db.refCache[hash] = RecordRef{seq: db.seq, offset: offset}
 	return rotated, nil
 }
 
@@ -303,10 +303,10 @@ func (db *DB) Rotate() error {
 	log.Printf("sequence %d; rotating...", db.seq)
 	// Add references to refCache.
 	for _, entry := range db.wchunk.index {
-		db.refCache.Put(entry.hash, RecordRef{
+		db.refCache[entry.hash] = RecordRef{
 			seq:    db.seq,
 			offset: entry.offset,
-		})
+		}
 	}
 	// Open the new chunk -- do this early, because this is where errors typically occur
 	if db.seq == math.MaxUint32 {
@@ -361,7 +361,7 @@ func (db *DB) removeExpiredChunks() error {
 		delete(db.rchunks, seq)
 		// Remove the refCache entries
 		for _, entry := range rchunk.index {
-			db.refCache.Delete(entry.hash)
+			delete(db.refCache, entry.hash)
 		}
 	}
 	return nil
@@ -438,10 +438,10 @@ aggregate:
 				db.seq = task.seq + 1
 			}
 			for _, entry := range task.index {
-				db.refCache.Put(entry.hash, RecordRef{
+				db.refCache[entry.hash] = RecordRef{
 					seq:    task.seq,
 					offset: entry.offset,
-				})
+				}
 			}
 			db.rchunks[task.seq] = task.rchunk
 			log.Printf("Loaded chunk %d", task.seq)
