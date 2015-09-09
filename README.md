@@ -13,3 +13,9 @@ General implementation notes:
 - Key/value pairs are stored on disk in a rotating set of fixed-size append-only logs
 - The keys are associated with offsets into the log by an in-memory hashtable (can be reconstructed from an
   index written alongside each log)
+
+Future optimizations
+
+- The DB mutex is a huge lock -> bottleneck
+  - Shard the memCache, refCache to use more granular locks
+  - Pull some ideas from the lock-free hash table literature

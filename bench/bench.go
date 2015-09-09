@@ -45,7 +45,7 @@ func makeRequests(pool *redis.Pool, delay time.Duration, stats chan<- float64) {
 		key := randStr(10)
 		val := randomValues[i]
 		start := time.Now()
-		_, err := conn.Do("SET", key, val)
+		_, err := conn.Do("SET", key, val, "NX")
 		stats <- time.Since(start).Seconds() * 1000
 		if err != nil {
 			log.Fatal(err)
@@ -70,7 +70,7 @@ func main() {
 	}
 
 	const P = 4
-	const targetQPS = 3000
+	const targetQPS = 10000
 	delay := time.Second / time.Duration(float64(targetQPS)/float64(P))
 
 	stats := make(chan float64)
