@@ -19,3 +19,4 @@ Future optimizations
 - The DB mutex is a huge lock -> bottleneck
   - Shard the memCache, refCache to use more granular locks
   - Pull some ideas from the lock-free hash table literature
+- Now that RefMap is gone, I think we can get rid of the SHA-1 key hashing and just use keys everywhere.
