@@ -19,6 +19,8 @@ import (
 	"github.com/cespare/kvcache/internal/github.com/dustin/go-humanize"
 )
 
+var version = "no version set" // may be overridden at build time with -ldflags -X
+
 type Server struct {
 	addr            string
 	db              *DB
@@ -370,8 +372,14 @@ func main() {
 		expiry        = flag.Duration("expiry", time.Hour, "How long data persists before expiring")
 		statsdAddr    = flag.String("statsdaddr", "localhost:8125", "Address to send UDP StatsD metrics")
 		removeCorrupt = flag.Bool("removecorrupt", false, "Whether to skip+delete corrupt chunks on load")
+		versionFlag   = flag.Bool("version", false, "Display the version and exit")
 	)
 	flag.Parse()
+
+	if *versionFlag {
+		fmt.Println(version)
+		return
+	}
 
 	chunkSizeBytes, err := humanize.ParseBytes(*chunkSize)
 	if err != nil {
